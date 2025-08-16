@@ -1,0 +1,151 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  
+  body {
+    @apply text-primary-900 antialiased bg-gradient-to-br from-primary-50 via-white to-accent-50;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+  
+  * {
+    @apply border-primary-200;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-gradient-to-r from-brand-600 to-brand-700 hover:from-brand-700 hover:to-brand-800 text-white font-semibold py-3 px-6 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-brand-300 focus:ring-offset-2 transform hover:-translate-y-0.5;
+  }
+  
+  .btn-secondary {
+    @apply bg-white hover:bg-primary-50 text-primary-700 font-semibold py-3 px-6 rounded-xl border-2 border-primary-200 hover:border-brand-300 shadow-md hover:shadow-lg transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-primary-200 focus:ring-offset-2 transform hover:-translate-y-0.5;
+  }
+  
+  .btn-success {
+    @apply bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 text-white font-semibold py-3 px-6 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-success-300 focus:ring-offset-2 transform hover:-translate-y-0.5;
+  }
+  
+  .btn-danger {
+    @apply bg-gradient-to-r from-error-500 to-error-600 hover:from-error-600 hover:to-error-700 text-white font-semibold py-3 px-6 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-error-300 focus:ring-offset-2 transform hover:-translate-y-0.5;
+  }
+  
+  .input-field {
+    @apply w-full px-4 py-3 border-2 border-primary-200 rounded-xl bg-white/80 backdrop-blur-sm focus:outline-none focus:ring-4 focus:ring-brand-200 focus:border-brand-400 transition-all duration-300 placeholder-primary-400;
+  }
+  
+  .card {
+    @apply bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-primary-100 p-8 hover:shadow-2xl transition-all duration-300;
+  }
+  
+  .metric-card {
+    @apply bg-gradient-to-br from-white to-primary-50/50 backdrop-blur-sm rounded-2xl shadow-lg border border-primary-100 p-6 hover:shadow-xl hover:scale-105 transition-all duration-300;
+  }
+  
+  .table-header {
+    @apply px-6 py-4 text-left text-xs font-bold text-primary-600 uppercase tracking-wider bg-gradient-to-r from-primary-50 to-accent-50;
+  }
+  
+  .table-cell {
+    @apply px-6 py-4 whitespace-nowrap text-sm text-primary-800 border-b border-primary-100;
+  }
+  
+  .badge {
+    @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold shadow-sm;
+  }
+  
+  .badge-success {
+    @apply bg-gradient-to-r from-success-100 to-success-200 text-success-800 border border-success-300;
+  }
+  
+  .badge-warning {
+    @apply bg-gradient-to-r from-warning-100 to-warning-200 text-warning-800 border border-warning-300;
+  }
+  
+  .badge-error {
+    @apply bg-gradient-to-r from-error-100 to-error-200 text-error-800 border border-error-300;
+  }
+  
+  .badge-info {
+    @apply bg-gradient-to-r from-brand-100 to-brand-200 text-brand-800 border border-brand-300;
+  }
+  
+  .loading-spinner {
+    @apply animate-spin rounded-full h-10 w-10 border-4 border-brand-200 border-t-brand-600 shadow-lg;
+  }
+  
+  .modal-overlay {
+    @apply fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in;
+  }
+  
+  .modal-content {
+    @apply bg-white/95 backdrop-blur-md rounded-3xl shadow-2xl max-w-md w-full mx-4 p-8 border border-primary-200 animate-slide-up;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-gradient-to-r from-primary-600 to-primary-800 bg-clip-text text-transparent;
+  }
+  
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Custom scrollbar for webkit browsers */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Animation classes */
+.fade-in {
+  animation: fadeIn 0.5s ease-in-out;
+}
+
+.slide-up {
+  animation: slideUp 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}

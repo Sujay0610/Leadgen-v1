@@ -1,0 +1,88 @@
+# FastAPI and web framework dependencies
+fastapi
+uvicorn[standard]
+python-multipart
+sse-starlette
+
+# Database and ORM
+supabase
+psycopg2-binary
+
+# AI and OpenAI
+openai
+
+# Email services
+resend
+
+# HTTP requests and API clients
+requests
+httpx
+
+# Data processing
+pandas
+numpy
+
+# Environment and configuration
+python-dotenv
+pydantic
+pydantic-settings
+
+# CORS and middleware
+fastapi-cors
+
+# Background tasks and async
+celery
+redis
+
+# Utilities
+python-dateutil
+typing-extensions
+
+# Development and testing
+pytest
+pytest-asyncio
+black
+flake8
+
+# Logging and monitoring
+loguru
+
+# JSON and data validation
+jsonschema
+
+# UUID generation
+uuid
+
+# Time and date handling
+pytz
+
+# Web scraping (for lead generation)
+beautifulsoup4
+lxml
+
+# Rate limiting
+slowapi
+
+# Security
+cryptography
+passlib[bcrypt]
+python-jose
+
+langchain
+langchain-openai
+langchain-community
+langchain-core
+langgraph
+pandas
+requests
+gspread
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+openai
+python-dotenv
+Authlib
+streamlit-authenticator
+plotly
+supabase
+pydantic
