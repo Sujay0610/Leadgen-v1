@@ -1,3 +1,4 @@
+import os
 import jwt
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
@@ -9,9 +10,16 @@ settings = get_settings()
 
 class AuthService:
     def __init__(self):
-        self.supabase: Client = create_client(
+        # Admin client (service role)
+        self.supabase_admin: Client = create_client(
             settings.SUPABASE_URL,
             settings.SUPABASE_SERVICE_ROLE_KEY
+        )
+        # Public client (anon key or NEXT_PUBLIC_SUPABASE_ANON_KEY fallback)
+        anon_key = settings.SUPABASE_ANON_KEY or os.getenv('NEXT_PUBLIC_SUPABASE_ANON_KEY') or settings.SUPABASE_SERVICE_ROLE_KEY
+        self.supabase_public: Client = create_client(
+            settings.SUPABASE_URL,
+            anon_key
         )
         self.jwt_secret = settings.JWT_SECRET_KEY
         self.jwt_algorithm = settings.JWT_ALGORITHM
@@ -20,20 +28,32 @@ class AuthService:
     def verify_supabase_jwt(self, token: str) -> Dict[str, Any]:
         """Verify Supabase JWT token"""
         try:
-            # Use Supabase client to verify the token
-            user = self.supabase.auth.get_user(token)
-            if user and user.user:
+            # Prefer public client for token verification
+            user = self.supabase_public.auth.get_user(token)
+            if user and getattr(user, 'user', None):
                 return {
                     "user_id": user.user.id,
                     "email": user.user.email,
                     "user_metadata": user.user.user_metadata
                 }
             else:
+                # Fallback to admin client in case of any odd behavior
+                user_admin = self.supabase_admin.auth.get_user(token)
+                if user_admin and getattr(user_admin, 'user', None):
+                    return {
+                        "user_id": user_admin.user.id,
+                        "email": user_admin.user.email,
+                        "user_metadata": user_admin.user.user_metadata
+                    }
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid authentication token"
                 )
+        except HTTPException:
+            raise
         except Exception as e:
+            # Debug log without leaking token
+            print(f"[AUTH] verify_supabase_jwt error: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid authentication token"
@@ -81,7 +101,7 @@ class AuthService:
     def get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get user profile from Supabase"""
         try:
-            response = self.supabase.table('profiles').select('*').eq('id', user_id).single().execute()
+            response = self.supabase_admin.table('profiles').select('*').eq('id', user_id).single().execute()
             return response.data if response.data else None
         except Exception:
             return None
@@ -99,7 +119,7 @@ class AuthService:
             if metadata:
                 profile_data.update(metadata)
             
-            response = self.supabase.table('profiles').insert(profile_data).execute()
+            response = self.supabase_admin.table('profiles').insert(profile_data).execute()
             return response.data[0] if response.data else profile_data
         except Exception as e:
             # Profile might already exist, try to get it

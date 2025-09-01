@@ -37,6 +37,7 @@ redis
 # Utilities
 python-dateutil
 typing-extensions
+pytz
 
 # Development and testing
 pytest

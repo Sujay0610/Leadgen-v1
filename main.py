@@ -90,7 +90,7 @@ SENDER_EMAIL = st.secrets.get("SENDER_EMAIL", "onboarding@resend.dev")  # Defaul
 class AIICPScorer:
     """Advanced ICP scorer using AI to analyze profile data"""
     
-    def __init__(self, openai_api_key: str = None, model: str = "openai/gpt-4.1-mini"):
+    def __init__(self, openai_api_key: str = None, model: str = "gpt-5-nano-2025-08-07"):
         # Try to get API key from parameter or environment
         self.api_key = openai_api_key or os.environ.get("OPENAI_API_KEY")
             
@@ -281,7 +281,7 @@ class EmailGenerator:
     
     def __init__(self, openai_api_key: str):
         self.llm = ChatOpenAI(
-            model="openai/gpt-4.1-mini",
+            model="gpt-5-nano-2025-08-07",
             temperature=0.7,  # Slightly higher temperature for more creative emails
             openai_api_key=openai_api_key,
             base_url="https://openrouter.ai/api/v1/",

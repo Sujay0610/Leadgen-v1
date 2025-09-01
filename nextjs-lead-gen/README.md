@@ -116,7 +116,7 @@ npm start
 - **Frontend**: Next.js 14 with TypeScript, Tailwind CSS, and React components
 - **Backend**: Next.js API routes with serverless functions
 - **Database**: Supabase (PostgreSQL) with real-time subscriptions
-- **AI Integration**: OpenAI GPT-4 for lead scoring and chat responses
+- **AI Integration**: OpenAI GPT-5-nano-2025-08-07 for lead scoring and chat responses
 - **Email Service**: Resend for transactional emails and webhooks
 - **Lead Sources**: Apollo.io and Google Search via Apify actors
 

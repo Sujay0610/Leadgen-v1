@@ -8,6 +8,26 @@ const supabase = createClient(
 
 export async function GET(request: NextRequest) {
   try {
+    // Get user from JWT token
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return NextResponse.json(
+        { status: 'error', message: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    const token = authHeader.substring(7)
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { status: 'error', message: 'Invalid authentication token' },
+        { status: 401 }
+      )
+    }
+
+    const userId = user.id
     const { searchParams } = new URL(request.url)
     const page = parseInt(searchParams.get('page') || '1')
     const limit = parseInt(searchParams.get('limit') || '50')
@@ -20,10 +40,11 @@ export async function GET(request: NextRequest) {
     const sortBy = searchParams.get('sortBy') || 'created_at'
     const sortOrder = searchParams.get('sortOrder') || 'desc'
 
-    // Build query
+    // Build query with user isolation
     let query = supabase
       .from('leads')
       .select('*', { count: 'exact' })
+      .eq('user_id', userId)
 
     // Apply filters
     if (search) {
@@ -85,6 +106,26 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    // Get user from JWT token
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return NextResponse.json(
+        { status: 'error', message: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    const token = authHeader.substring(7)
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { status: 'error', message: 'Invalid authentication token' },
+        { status: 401 }
+      )
+    }
+
+    const userId = user.id
     const body = await request.json()
     const { action, leadId, leadData } = body
 
@@ -103,6 +144,7 @@ export async function POST(request: NextRequest) {
           updated_at: new Date().toISOString()
         })
         .eq('id', leadId)
+        .eq('user_id', userId)
 
       if (error) {
         console.error('Error updating lead:', error)
@@ -130,6 +172,7 @@ export async function POST(request: NextRequest) {
         .from('leads')
         .delete()
         .eq('id', leadId)
+        .eq('user_id', userId)
 
       if (error) {
         console.error('Error deleting lead:', error)
@@ -162,6 +205,7 @@ export async function POST(request: NextRequest) {
           updated_at: new Date().toISOString()
         })
         .in('id', leadIds)
+        .eq('user_id', userId)
 
       if (error) {
         console.error('Error bulk updating leads:', error)
@@ -191,6 +235,7 @@ export async function POST(request: NextRequest) {
         .from('leads')
         .delete()
         .in('id', leadIds)
+        .eq('user_id', userId)
 
       if (error) {
         console.error('Error bulk deleting leads:', error)
@@ -222,6 +267,26 @@ export async function POST(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
+    // Get JWT token from Authorization header
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return NextResponse.json(
+        { status: 'error', message: 'Not authenticated' },
+        { status: 401 }
+      )
+    }
+
+    const token = authHeader.substring(7)
+    const { data: userData, error: authError } = await supabase.auth.getUser(token)
+    
+    if (authError || !userData.user) {
+      return NextResponse.json(
+        { status: 'error', message: 'Invalid token' },
+        { status: 401 }
+      )
+    }
+
+    const userId = userData.user.id
     const body = await request.json()
     const { id, ...updateData } = body
 
@@ -236,9 +301,10 @@ export async function PUT(request: NextRequest) {
       .from('leads')
       .update({
         ...updateData,
-        updatedAt: new Date().toISOString()
+        updated_at: new Date().toISOString()
       })
       .eq('id', id)
+      .eq('user_id', userId)
       .select()
       .single()
 
@@ -267,6 +333,26 @@ export async function PUT(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
+    // Get JWT token from Authorization header
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return NextResponse.json(
+        { status: 'error', message: 'Not authenticated' },
+        { status: 401 }
+      )
+    }
+
+    const token = authHeader.substring(7)
+    const { data: userData, error: authError } = await supabase.auth.getUser(token)
+    
+    if (authError || !userData.user) {
+      return NextResponse.json(
+        { status: 'error', message: 'Invalid token' },
+        { status: 401 }
+      )
+    }
+
+    const userId = userData.user.id
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
 
@@ -281,6 +367,7 @@ export async function DELETE(request: NextRequest) {
       .from('leads')
       .delete()
       .eq('id', id)
+      .eq('user_id', userId)
 
     if (error) {
       console.error('Error deleting lead:', error)

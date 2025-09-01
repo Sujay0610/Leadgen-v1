@@ -68,7 +68,7 @@ Always be helpful, professional, and focused on lead generation and sales prospe
           'Authorization': `Bearer ${this.apiKey}`
         },
         body: JSON.stringify({
-          model: 'gpt-4',
+          model: 'gpt-5-nano-2025-08-07',
           messages,
           temperature: 0.7,
           max_tokens: 1000

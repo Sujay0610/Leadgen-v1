@@ -79,11 +79,17 @@
   }
   
   .modal-overlay {
-    @apply fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in;
+    @apply fixed inset-0 bg-black/80 flex items-center justify-center z-[9999] animate-fade-in;
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
   }
   
   .modal-content {
-    @apply bg-white/95 backdrop-blur-md rounded-3xl shadow-2xl max-w-md w-full mx-4 p-8 border border-primary-200 animate-slide-up;
+    @apply bg-white rounded-xl shadow-2xl max-w-2xl w-full mx-4 border border-primary-200 animate-slide-up max-h-[85vh] overflow-y-auto;
+    position: relative !important;
   }
 }
 

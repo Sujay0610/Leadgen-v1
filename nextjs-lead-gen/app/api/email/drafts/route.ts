@@ -87,7 +87,7 @@ export async function POST(request: NextRequest) {
         scheduledAt: scheduledAt || null,
         campaignId: campaignId || null,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        updated_at: new Date().toISOString()
       }
 
       const { error } = await supabase
@@ -175,7 +175,7 @@ export async function POST(request: NextRequest) {
           .update({
             status: 'sent',
             sentAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
+            updated_at: new Date().toISOString()
           })
           .eq('id', draftId)
 
@@ -212,7 +212,7 @@ export async function POST(request: NextRequest) {
         .update({
           status: 'scheduled',
           scheduledAt,
-          updatedAt: new Date().toISOString()
+          updated_at: new Date().toISOString()
         })
         .eq('id', draftId)
 
@@ -245,7 +245,7 @@ export async function POST(request: NextRequest) {
         .update({
           status: 'draft',
           scheduledAt: null,
-          updatedAt: new Date().toISOString()
+          updated_at: new Date().toISOString()
         })
         .eq('id', draftId)
 
@@ -290,7 +290,7 @@ export async function PUT(request: NextRequest) {
     }
 
     const updateData: any = {
-      updatedAt: new Date().toISOString()
+        updated_at: new Date().toISOString()
     }
 
     if (subject) updateData.subject = subject

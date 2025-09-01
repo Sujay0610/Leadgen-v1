@@ -26,9 +26,8 @@ class TemplateGenerator {
           'Authorization': `Bearer ${this.apiKey}`
         },
         body: JSON.stringify({
-          model: 'gpt-4',
+          model: 'gpt-5-nano-2025-08-07',
           messages: [{ role: 'user', content: prompt }],
-          temperature: 0.7,
           max_tokens: 500
         })
       })
@@ -212,7 +211,7 @@ export async function POST(request: NextRequest) {
         leadId: leadId || null,
         usageCount: 0,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        updated_at: new Date().toISOString()
       }
 
       const { error } = await supabase
@@ -249,7 +248,7 @@ export async function POST(request: NextRequest) {
         .from('email_templates')
         .update({
           usageCount: supabase.sql`usage_count + 1`,
-          updatedAt: new Date().toISOString()
+          updated_at: new Date().toISOString()
         })
         .eq('id', templateId)
 
@@ -294,7 +293,7 @@ export async function PUT(request: NextRequest) {
     }
 
     const updateData: any = {
-      updatedAt: new Date().toISOString()
+        updated_at: new Date().toISOString()
     }
 
     if (subject) updateData.subject = subject

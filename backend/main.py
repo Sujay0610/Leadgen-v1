@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -29,7 +29,7 @@ from services.chat_service import ChatService
 from services.icp_service import ICPService
 from services.auth_service import AuthService
 from config import get_settings
-from dependencies.auth import get_current_user, get_optional_user
+from dependencies.auth import get_current_user, get_optional_user, get_user_from_token_param
 from routes import auth
 
 app = FastAPI(
@@ -89,15 +89,12 @@ async def protected_endpoint(current_user: Dict[str, Any] = Depends(get_current_
         "user": current_user
     }
 
-# Add authentication to existing endpoints
-@app.get("/leads")
-async def get_leads():
-    # Your existing leads logic here
-    pass
+# Add authentication to existing endpoints - DEPRECATED
+# Use /api/leads instead
 
 # Chat endpoints
 @app.post("/api/chat")
-async def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
         # Convert ChatMessage objects to dict format expected by ChatService
         conversation_history = []
@@ -108,11 +105,17 @@ async def chat_endpoint(request: ChatRequest):
                     "content": msg.content
                 })
         
+        # Extract method from context
+        method = request.context.get("method", "apollo") if request.context else "apollo"
+        
         # Call the correct method with proper parameters
         response = await chat_service.process_chat_message({
             "message": request.message,
             "conversationHistory": conversation_history,
-            "context": {"leadGenerationMode": True}
+            "context": {
+                "leadGenerationMode": True,
+                "method": method
+            }
         })
         
         if response["status"] == "success":
@@ -121,8 +124,11 @@ async def chat_endpoint(request: ChatRequest):
             if structured_data and any(key in structured_data for key in ['jobTitles', 'locations', 'industries']):
                 # Try to generate leads using the structured data
                 try:
+                    # Generate session ID for status tracking
+                    session_id = str(uuid.uuid4())
+                    
                     lead_params = {
-                        "method": "apollo",  # Default method
+                        "method": method,  # Use the method from context
                         "jobTitles": structured_data.get("jobTitles", []),
                         "locations": structured_data.get("locations", []),
                         "industries": structured_data.get("industries", []),
@@ -130,28 +136,37 @@ async def chat_endpoint(request: ChatRequest):
                         "limit": 10
                     }
                     
-                    lead_result = await lead_service.generate_leads(lead_params)
+                    # Generate leads in background with session tracking
+                    async def run_lead_generation():
+                        try:
+                            result = await lead_service.generate_leads(lead_params, session_id)
+                            print(f"Lead generation completed for session {session_id}: {result}")
+                        except Exception as e:
+                            print(f"Error in background lead generation: {e}")
+                            lead_service.emit_status(session_id, {
+                                "type": "error",
+                                "message": str(e),
+                                "timestamp": datetime.now().isoformat()
+                            })
                     
-                    if lead_result["status"] == "success":
-                        return {
-                            "status": "success",
-                            "data": {
-                                "response": f"{response['data']['response']} Found {lead_result['count']} leads!",
-                                "leads": lead_result["leads"],
-                                "count": lead_result["count"],
-                                "conversationId": response["data"].get("conversationId"),
-                                "timestamp": response["data"].get("timestamp")
-                            }
+                    # Start background task
+                    background_tasks.add_task(run_lead_generation)
+                    
+                    return {
+                        "status": "success",
+                        "data": {
+                            "response": f"{response['data']['response']} Perfect! I'm now generating leads for you. You can track the progress using the session ID.",
+                            "conversationId": response["data"].get("conversationId"),
+                            "sessionId": session_id,
+                            "leadGeneration": {
+                                "status": "started",
+                                "method": method,
+                                "parameters": lead_params
+                            },
+                            "timestamp": response["data"].get("timestamp")
                         }
-                    else:
-                        return {
-                            "status": "success",
-                            "data": {
-                                "response": f"I tried to generate leads but encountered an issue: {lead_result['message']}. Please try refining your search criteria.",
-                                "conversationId": response["data"].get("conversationId"),
-                                "timestamp": response["data"].get("timestamp")
-                            }
-                        }
+                    }
+                    
                 except Exception as error:
                     return {
                         "status": "success",
@@ -182,7 +197,7 @@ async def chat_endpoint(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/chat")
-async def chat_get_endpoint(action: str = None):
+async def chat_get_endpoint(action: str = None, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
         if action == "examples":
             return {
@@ -216,7 +231,123 @@ async def chat_get_endpoint(action: str = None):
 
 # Lead generation endpoints
 @app.post("/api/generate-leads")
-async def generate_leads_endpoint(request: LeadGenerationRequest, session_id: str = None):
+async def generate_leads_endpoint(request: LeadGenerationRequest, background_tasks: BackgroundTasks, current_user: Dict[str, Any] = Depends(get_current_user), session_id: Optional[str] = Query(None)):
+    """Original lead generation endpoint with authentication"""
+    print(f"Lead generation started with session_id: {session_id}")
+    try:
+        # Generate session ID if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
+        
+        # Convert request to dict format expected by lead_service
+        params = {
+            "method": request.method,
+            "jobTitles": request.jobTitles,
+            "locations": request.locations,
+            "industries": request.industries,
+            "companySizes": request.companySizes,
+            "limit": request.limit,
+            "user_id": current_user["user_id"]
+        }
+        
+        # Start lead generation in background using the correct method
+        async def run_lead_generation():
+            try:
+                result = await lead_service.generate_leads(params, session_id)
+                print(f"Lead generation completed for session {session_id}: {result}")
+            except Exception as e:
+                print(f"Error in background lead generation: {e}")
+                lead_service.emit_status(session_id, {
+                    "status": "error",
+                    "message": str(e),
+                    "timestamp": datetime.now().isoformat()
+                })
+        
+        background_tasks.add_task(run_lead_generation)
+        
+        return {
+            "status": "success",
+            "message": "Lead generation started",
+            "session_id": session_id,
+            "user_id": current_user["user_id"],
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        print(f"Error in lead generation: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "session_id": session_id if 'session_id' in locals() else "unknown",
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.post("/api/generate-leads-test")
+async def generate_leads_test_endpoint(request: LeadGenerationRequest, background_tasks: BackgroundTasks, session_id: Optional[str] = Query(None)):
+    """Test lead generation endpoint without authentication for testing purposes"""
+    print(f"Test lead generation started with session_id: {session_id}")
+    try:
+        # Generate session ID if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
+        
+        # Create a test user context
+        test_user = {
+            "user_id": "test-user-123",
+            "email": "test@example.com"
+        }
+        
+        # Convert request to dict format expected by lead_service
+        params = {
+            "method": request.method,
+            "jobTitles": request.jobTitles,
+            "locations": request.locations,
+            "industries": request.industries,
+            "companySizes": request.companySizes,
+            "limit": request.limit,
+            "user_id": test_user["user_id"]
+        }
+        
+        # Start lead generation in background using the correct method
+        async def run_lead_generation():
+            try:
+                result = await lead_service.generate_leads(params, session_id)
+                print(f"Lead generation completed for session {session_id}: {result}")
+            except Exception as e:
+                print(f"Error in background lead generation: {e}")
+                lead_service.emit_status(session_id, {
+                    "status": "error",
+                    "message": str(e),
+                    "timestamp": datetime.now().isoformat()
+                })
+        
+        background_tasks.add_task(run_lead_generation)
+        
+        return {
+            "status": "success",
+            "message": "Test lead generation started",
+            "session_id": session_id,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        print(f"Error in test lead generation: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "session_id": session_id if 'session_id' in locals() else "unknown",
+            "timestamp": datetime.now().isoformat()
+        }
+
+    return {
+        "status": "success",
+        "message": "Test lead generation started",
+        "session_id": session_id,
+        "user_id": test_user["user_id"],
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.post("/api/generate-leads-original")
+async def generate_leads_endpoint_original(request: LeadGenerationRequest, current_user: Dict[str, Any] = Depends(get_current_user), session_id: Optional[str] = Query(None)):
+    print(f"Lead generation started with session_id: {session_id}")
     try:
         # Generate a session ID if not provided
         if not session_id:
@@ -228,11 +359,12 @@ async def generate_leads_endpoint(request: LeadGenerationRequest, session_id: st
             "locations": request.locations,
             "industries": request.industries or [],
             "companySizes": request.companySizes or [],
-            "limit": request.limit
+            "limit": request.limit,
+            "user_id": current_user["user_id"]
         }, session_id)
         
-        # Close the status session after completion
-        lead_service.close_status_session(session_id)
+        # Don't close the status session here - let the SSE endpoint handle cleanup
+        # lead_service.close_status_session(session_id)
         
         # Add session_id to response for frontend reference
         if isinstance(result, dict):
@@ -266,23 +398,50 @@ async def generate_leads_config():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/generate-leads/status")
-async def generate_leads_status(session_id: str):
-    """Server-Sent Events endpoint for real-time lead generation status updates"""
-    async def event_generator():
-        try:
-            # Get status updates from lead service
-            async for status_update in lead_service.get_status_updates(session_id):
-                yield {
-                    "event": "status",
-                    "data": json.dumps(status_update)
-                }
-        except Exception as e:
-            yield {
-                "event": "error",
-                "data": json.dumps({"error": str(e)})
+async def generate_leads_status(session_id: str, include_history: bool = False, current_user: Dict[str, Any] = Depends(get_user_from_token_param)):
+    """REST endpoint for polling lead generation status"""
+    try:
+        # Get current status from lead service
+        status = lead_service.get_status(session_id, include_history=include_history)
+        print(f"[STATUS] Retrieved status for session {session_id} (include_history={include_history}): {status.get('type', 'unknown')}")
+        
+        return JSONResponse(content={
+            "success": True,
+            "data": status
+        })
+        
+    except Exception as e:
+        print(f"[STATUS] Error getting status for session {session_id}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e)
             }
-    
-    return EventSourceResponse(event_generator())
+        )
+
+@app.get("/api/generate-leads/status-test")
+async def generate_leads_status_test(session_id: str, include_history: bool = False):
+    """Test REST endpoint for polling status without authentication"""
+    try:
+        # Get current status from lead service
+        status = lead_service.get_status(session_id, include_history=include_history)
+        print(f"[STATUS TEST] Retrieved status for session {session_id} (include_history={include_history}): {status.get('type', 'unknown')}")
+        
+        return JSONResponse(content={
+            "success": True,
+            "data": status
+        })
+        
+    except Exception as e:
+        print(f"[STATUS TEST] Error getting status for session {session_id}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e)
+            }
+        )
 
 # Leads CRUD endpoints
 @app.get("/api/leads")
@@ -296,10 +455,12 @@ async def get_leads(
     jobTitle: str = "",
     emailStatus: str = "",
     sortBy: str = "created_at",
-    sortOrder: str = "desc"
+    sortOrder: str = "desc",
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     try:
         result = await lead_service.get_leads(
+            user_id=current_user["user_id"],
             page=page,
             limit=limit,
             search=search,
@@ -316,14 +477,14 @@ async def get_leads(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/leads")
-async def leads_post_endpoint(request: LeadActionRequest):
+async def leads_post_endpoint(request: LeadActionRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
         if request.action == "update":
-            result = await lead_service.update_lead(request.leadId, request.leadData)
+            result = await lead_service.update_lead(current_user["user_id"], request.leadId, request.leadData)
         elif request.action == "delete":
-            result = await lead_service.delete_lead(request.leadId)
+            result = await lead_service.delete_lead(current_user["user_id"], request.leadId)
         elif request.action == "bulk_delete":
-            result = await lead_service.bulk_delete_leads(request.leadIds)
+            result = await lead_service.bulk_delete_leads(current_user["user_id"], request.leadIds)
         else:
             raise HTTPException(status_code=400, detail="Invalid action specified")
         
@@ -332,35 +493,35 @@ async def leads_post_endpoint(request: LeadActionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/leads")
-async def update_lead_endpoint(request: LeadUpdateRequest):
+async def update_lead_endpoint(request: LeadUpdateRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
-        result = await lead_service.update_lead(request.id, request.dict(exclude={"id"}))
+        result = await lead_service.update_lead(current_user["user_id"], request.id, request.dict(exclude={"id"}))
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/leads")
-async def delete_lead_endpoint(id: str):
+async def delete_lead_endpoint(id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
-        result = await lead_service.delete_lead(id)
+        result = await lead_service.delete_lead(current_user["user_id"], id)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # Lead metrics endpoint
 @app.get("/api/leads/metrics")
-async def get_lead_metrics(timeRange: str = "30d"):
+async def get_lead_metrics(timeRange: str = "30d", current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
-        result = await lead_service.get_metrics(timeRange)
+        result = await lead_service.get_metrics(current_user["user_id"], timeRange)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # Batch enrichment endpoint
 @app.post("/api/leads/enrich-batch")
-async def enrich_profiles_batch(request: BatchEnrichmentRequest):
+async def enrich_profiles_batch(request: BatchEnrichmentRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
-        enriched_profiles = await lead_service.enrich_profile_with_apify(request.profileUrls)
+        enriched_profiles = await lead_service.enrich_profile_with_apify(request.profileUrls, current_user["user_id"])
         
         return BatchEnrichmentResponse(
             status="success",
@@ -373,20 +534,20 @@ async def enrich_profiles_batch(request: BatchEnrichmentRequest):
 
 # Email endpoints
 @app.post("/api/email/send")
-async def send_email_endpoint(request: EmailSendRequest):
+async def send_email_endpoint(request: EmailSendRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
-        result = await email_service.send_email(request)
+        result = await email_service.send_email(request, current_user["user_id"])
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/email/send")
-async def email_send_get_endpoint(action: str = None, leadId: str = None):
+async def email_send_get_endpoint(action: str = None, leadId: str = None, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
         if action == "status" and leadId:
-            result = await email_service.get_email_status(leadId)
+            result = await email_service.get_email_status(current_user["user_id"], leadId)
         elif action == "history" and leadId:
-            result = await email_service.get_email_history(leadId)
+            result = await email_service.get_email_history(current_user["user_id"], leadId)
         elif action == "config":
             result = await email_service.get_email_config()
         else:
@@ -396,24 +557,42 @@ async def email_send_get_endpoint(action: str = None, leadId: str = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/email/generate")
+async def generate_email_endpoint(request: EmailGenerationRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+    try:
+        result = await email_service.generate_email({
+            "leadName": request.leadName,
+            "leadCompany": request.leadCompany,
+            "leadTitle": request.leadTitle,
+            "emailType": request.emailType,
+            "tone": request.tone,
+            "customContext": request.customContext,
+            "templateId": getattr(request, 'templateId', None),
+            "leadData": getattr(request, 'leadData', None)
+        })
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Email templates endpoints
 @app.get("/api/email/templates")
 async def get_email_templates(
     persona: str = None,
     stage: str = None,
-    limit: int = 50
+    limit: int = 50,
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     try:
-        result = await email_service.get_email_templates()
+        result = await email_service.get_email_templates(current_user["user_id"])
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/email/templates")
-async def email_templates_post_endpoint(request: EmailTemplateRequest):
+async def email_templates_post_endpoint(request: EmailTemplateRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
         if request.action == "create":
-            result = await email_service.save_template({
+            result = await email_service.save_template(current_user["user_id"], {
                 "name": request.name,
                 "subject": request.subject,
                 "body": request.body,
@@ -422,12 +601,12 @@ async def email_templates_post_endpoint(request: EmailTemplateRequest):
             })
         elif request.action == "generate":
             result = await email_service.generate_template(
-                request.persona, request.stage, request.leadData
+                current_user["user_id"], request.persona, request.stage, request.leadData
             )
         elif request.action == "save":
-            result = await email_service.save_template(request)
+            result = await email_service.save_template(request, current_user["user_id"])
         elif request.action == "use":
-            result = await email_service.use_template(request.templateId)
+            result = await email_service.use_template(current_user["user_id"], request.templateId)
         else:
             raise HTTPException(status_code=400, detail="Invalid action specified")
         
@@ -435,10 +614,24 @@ async def email_templates_post_endpoint(request: EmailTemplateRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/email/templates/{template_id}")
-async def delete_email_template(template_id: str):
+@app.put("/api/email/templates/{template_id}")
+async def update_email_template(template_id: str, request: EmailTemplateRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
-        result = await email_service.delete_template(template_id)
+        template_data = {
+            "subject": request.subject,
+            "body": request.body,
+            "persona": request.persona,
+            "stage": request.stage
+        }
+        result = await email_service.update_email_template(current_user["user_id"], template_id, template_data)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/email/templates/{template_id}")
+async def delete_email_template(template_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    try:
+        result = await email_service.delete_template(current_user["user_id"], template_id)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -448,27 +641,29 @@ async def delete_email_template(template_id: str):
 async def get_email_drafts(
     leadId: str = None,
     status: str = None,
-    limit: int = 50
+    limit: int = 50,
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     try:
-        result = await email_service.get_email_drafts()
+        result = await email_service.get_email_drafts(current_user["user_id"])
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/email/drafts")
-async def email_drafts_post_endpoint(request: EmailDraftRequest):
+async def email_drafts_post_endpoint(request: EmailDraftRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
         if request.action == "create":
             result = await email_service.create_draft({
-                "leadId": request.leadId,
-                "subject": request.subject,
-                "body": request.body,
-                "persona": request.persona,
-                "stage": request.stage
-            })
+            "leadId": request.leadId,
+            "subject": request.subject,
+            "body": request.body,
+            "persona": request.persona,
+            "stage": request.stage,
+            "user_id": current_user["user_id"]
+        })
         elif request.action == "send":
-            result = await email_service.send_draft(request.draftId)
+            result = await email_service.send_draft(current_user["user_id"], request.draftId)
         else:
             raise HTTPException(status_code=400, detail="Invalid action specified")
         
@@ -477,9 +672,9 @@ async def email_drafts_post_endpoint(request: EmailDraftRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/email/drafts")
-async def update_email_draft(request: EmailDraftUpdateRequest):
+async def update_email_draft(request: EmailDraftUpdateRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
-        result = await email_service.update_email_draft(request.id, request)
+        result = await email_service.update_email_draft(current_user["user_id"], request.id, request)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -488,10 +683,11 @@ async def update_email_draft(request: EmailDraftUpdateRequest):
 @app.get("/api/email/campaigns")
 async def get_email_campaigns(
     status: str = None,
-    limit: int = 50
+    limit: int = 50,
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     try:
-        result = await email_service.get_email_campaigns()
+        result = await email_service.get_email_campaigns(current_user["user_id"])
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -504,25 +700,26 @@ async def email_campaigns_post_endpoint(
     """Create email campaign"""
     try:
         result = await email_service.create_campaign(
+            user_id=current_user["user_id"],
             name=request.name,
             description=request.description,
-            template_id=request.template_id,
-            selected_leads=request.selected_leads,
-            email_interval=request.email_interval,
-            daily_limit=request.daily_limit,
-            send_time_start=request.send_time_start,
-            send_time_end=request.send_time_end,
+            template_id=request.templateId,
+            selected_leads=request.selectedLeads,
+            email_interval=request.emailInterval,
+            daily_limit=request.dailyLimit,
+            send_time_start=request.sendTimeStart,
+            send_time_end=request.sendTimeEnd,
             timezone=request.timezone,
-            scheduled_at=request.scheduled_at
+            scheduled_at=request.scheduledAt
         )
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/email/campaigns")
-async def update_email_campaign(request: EmailCampaignUpdateRequest):
+async def update_email_campaign(request: EmailCampaignUpdateRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
-        result = await email_service.update_campaign(request.id, request)
+        result = await email_service.update_campaign(current_user["user_id"], request.id, request)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -536,11 +733,11 @@ async def update_campaign_status_endpoint(
     """Update campaign status (start, pause, resume)"""
     try:
         if request.action == "start":
-            result = await email_service.start_campaign(campaign_id)
+            result = await email_service.start_campaign(current_user["user_id"], campaign_id)
         elif request.action == "pause":
-            result = await email_service.pause_campaign(campaign_id)
+            result = await email_service.pause_campaign(current_user["user_id"], campaign_id)
         elif request.action == "resume":
-            result = await email_service.resume_campaign(campaign_id)
+            result = await email_service.resume_campaign(current_user["user_id"], campaign_id)
         else:
             raise HTTPException(status_code=400, detail="Invalid action")
         
@@ -549,27 +746,41 @@ async def update_campaign_status_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/email/campaigns/{campaign_id}/status")
-async def get_campaign_status(campaign_id: str):
+async def get_campaign_status(campaign_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
-        result = await email_service.get_campaign_status(campaign_id)
+        result = await email_service.get_campaign_status(current_user["user_id"], campaign_id)
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/email/campaigns/{campaign_id}")
+async def delete_campaign(campaign_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Delete email campaign"""
+    try:
+        result = await email_service.delete_campaign(current_user["user_id"], campaign_id)
+        if result["status"] == "error" and "not found" in result["message"].lower():
+            raise HTTPException(status_code=404, detail=result["message"])
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # Email dashboard endpoint
 @app.get("/api/email/dashboard")
-async def get_email_dashboard(timeRange: str = "30"):
+async def get_email_dashboard(timeRange: str = "30", current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
-        result = await email_service.get_email_metrics(f"{timeRange}d")
+        result = await email_service.get_email_metrics(current_user["user_id"], f"{timeRange}d")
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/email/dashboard")
-async def email_dashboard_post_endpoint(request: EmailDashboardRequest):
+async def email_dashboard_post_endpoint(request: EmailDashboardRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
         if request.action == "refresh":
-            return {"status": "success", "message": "Dashboard data refreshed"}
+            result = await email_service.refresh_dashboard_data(current_user["user_id"])
+            return result
         elif request.action == "export":
             # Export dashboard functionality not implemented yet
             result = {"status": "error", "message": "Export dashboard not implemented"}
@@ -581,18 +792,99 @@ async def email_dashboard_post_endpoint(request: EmailDashboardRequest):
 
 # ICP configuration endpoints
 @app.get("/api/icp/config")
-async def get_icp_config():
+async def get_icp_config(current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
-        result = await icp_service.get_config()
+        result = await icp_service.get_config(current_user["user_id"])
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/icp/config")
-async def update_icp_config(request: ICPConfigRequest):
+async def update_icp_config(request: ICPConfigRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
-        result = await icp_service.update_config(request)
+        result = await icp_service.update_config(current_user["user_id"], request)
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ICP prompt configuration endpoints
+@app.post("/api/icp/prompt")
+async def update_icp_prompt(request: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
+    try:
+        # Update both prompt and default values together in a single operation
+        prompt = request.get("prompt", "")
+        default_values = request.get("default_values", {})
+        
+        # Use the combined update method
+        result = lead_service.ai_icp_scorer.update_prompt_and_values(prompt, default_values)
+        
+        return {
+            "status": "success",
+            "message": "ICP prompt updated successfully"
+            }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+            }
+
+@app.get("/api/icp/prompt")
+async def get_icp_prompt(current_user: Dict[str, Any] = Depends(get_current_user)):
+    try:
+        # Unwrap the scorer response to return a clean shape
+        prompt_result = lead_service.ai_icp_scorer.get_prompt()
+        data = prompt_result.get("data", {}) if isinstance(prompt_result, dict) else {}
+        prompt_raw = data.get("prompt", "")
+        
+        # Handle nested prompt data - extract string from nested objects
+        prompt_str = prompt_raw
+        if isinstance(prompt_raw, dict):
+            # If prompt is a dict, try to extract the actual prompt string
+            if "data" in prompt_raw and isinstance(prompt_raw["data"], dict):
+                prompt_str = prompt_raw["data"].get("prompt", "")
+            elif "prompt" in prompt_raw:
+                prompt_str = prompt_raw["prompt"]
+            else:
+                # If we can't extract a string, use the default
+                prompt_str = lead_service.ai_icp_scorer._get_default_prompt()
+        elif isinstance(prompt_raw, str):
+            try:
+                # Try to parse as JSON in case it's a JSON string
+                parsed = json.loads(prompt_raw)
+                if isinstance(parsed, dict):
+                    if "data" in parsed and isinstance(parsed["data"], dict):
+                        prompt_str = parsed["data"].get("prompt", prompt_raw)
+                    elif "prompt" in parsed:
+                        prompt_str = parsed["prompt"]
+                    else:
+                        prompt_str = prompt_raw
+                else:
+                    prompt_str = prompt_raw
+            except (json.JSONDecodeError, TypeError):
+                # If it's not valid JSON, use as-is
+                prompt_str = prompt_raw
+        
+        # Ensure we have a string
+        if not isinstance(prompt_str, str) or not prompt_str.strip():
+            prompt_str = lead_service.ai_icp_scorer._get_default_prompt()
+            
+        # Get default values from the get_prompt method if not found in data
+        if "default_values" not in data or not data["default_values"]:
+            default_prompt_result = lead_service.ai_icp_scorer.get_prompt()
+            default_data = default_prompt_result.get("data", {}) if isinstance(default_prompt_result, dict) else {}
+            default_vals = default_data.get("default_values", {
+                "target_roles": "Operations Manager, Facility Manager, Maintenance Manager",
+                "target_industries": "Manufacturing, Industrial, Automotive",
+                "target_company_sizes": "51-200, 201-500, 501-1000",
+                "target_locations": "United States",
+                "target_seniority": "Manager, Director, VP, C-Level"
+            })
+        else:
+            default_vals = data.get("default_values")
+        return {
+            "prompt": prompt_str,
+            "default_values": default_vals
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -647,6 +939,77 @@ async def webhook_get_endpoint(action: str = None):
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Add test mode configuration
+TEST_MODE = False  # Global test mode flag
+
+# Update email service initialization
+email_service = EmailService(test_mode=TEST_MODE)
+
+# Add endpoint to toggle test mode
+@app.post("/api/email/test-mode")
+async def toggle_test_mode(request: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
+    global TEST_MODE, email_service
+    try:
+        TEST_MODE = request.get("enabled", False)
+        # Reinitialize email service with new test mode
+        email_service = EmailService(test_mode=TEST_MODE)
+        
+        return {
+            "status": "success",
+            "message": f"Test mode {'enabled' if TEST_MODE else 'disabled'}",
+            "testMode": TEST_MODE
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/email/test-mode")
+async def get_test_mode(current_user: Dict[str, Any] = Depends(get_current_user)):
+    return {
+        "status": "success",
+        "testMode": TEST_MODE
+    }
+
+@app.post("/api/email/process-scheduled")
+async def process_scheduled_emails_endpoint(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Process scheduled emails that are due to be sent"""
+    try:
+        result = await email_service.process_scheduled_emails()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing scheduled emails: {str(e)}")
+
+# Background task to process scheduled emails every minute
+import threading
+import time
+
+def background_email_processor():
+    """Background task to process scheduled emails"""
+    import asyncio
+    
+    print("[EMAIL PROCESSOR] Background email processor started")
+    
+    async def process_emails():
+        try:
+            print("[EMAIL PROCESSOR] Checking for scheduled emails...")
+            result = await email_service.process_scheduled_emails()
+            print(f"[EMAIL PROCESSOR] Processed scheduled emails: {result}")
+        except Exception as e:
+            print(f"[EMAIL PROCESSOR] Background email processing error: {e}")
+    
+    while True:
+        try:
+            # Run the async function in the background
+            asyncio.run(process_emails())
+        except Exception as e:
+            print(f"[EMAIL PROCESSOR] Background task error: {e}")
+        
+        # Wait 60 seconds before next check
+        time.sleep(60)
+
+# Start background task
+background_thread = threading.Thread(target=background_email_processor, daemon=True)
+background_thread.start()
 
 if __name__ == "__main__":
     import uvicorn

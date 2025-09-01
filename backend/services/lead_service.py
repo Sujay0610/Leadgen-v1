@@ -11,6 +11,8 @@ import time
 import requests
 from supabase import create_client, Client
 from openai import OpenAI
+from langchain_openai import ChatOpenAI
+from langchain.schema import HumanMessage
 from config import Settings, get_settings
 
 class APIKeyQueue:
@@ -74,21 +76,290 @@ class APIKeyQueue:
         return len([k for k in self.keys if k not in self.exhausted_keys])
 
 class AIICPScorer:
-    """Advanced ICP scorer using AI to analyze profile data"""
+    """AI-powered ICP (Ideal Customer Profile) scorer"""
     
-    def __init__(self, openai_api_key: str = None, model: str = "gpt-4o-mini"):
-        self.api_key = openai_api_key or os.environ.get("OPENAI_API_KEY")
-            
-        if not self.api_key:
-            raise ValueError("OpenAI API key is required.")
-            
-        self.llm = OpenAI(
-            api_key=self.api_key,
-            base_url="https://openrouter.ai/api/v1/",
+    def __init__(self):
+        self.settings = get_settings()
+        self.supabase = create_client(
+            self.settings.SUPABASE_URL,
+            self.settings.SUPABASE_SERVICE_ROLE_KEY
         )
-        self.model = model
         
-        self.default_icp_prompt = """You are an ICP (Ideal Customer Profile) evaluator.
+        # Initialize OpenAI client
+        if self.settings.OPENAI_API_KEY:
+            self.openai_client = OpenAI(
+                api_key=self.settings.OPENAI_API_KEY
+            )
+            print(f"[AI ICP] OpenAI client initialized successfully")
+        else:
+            self.openai_client = None
+            print(f"[AI ICP] OpenAI API key not configured - using default scores")
+    
+    def clean_ai_json_response(self, response_text: str) -> str:
+        """Clean AI response to extract valid JSON"""
+        if not response_text:
+            return "{}"
+        
+        # Remove leading/trailing whitespace and newlines
+        cleaned = response_text.strip()
+        
+        # Remove markdown code blocks if present
+        if cleaned.startswith('```json'):
+            cleaned = cleaned[7:]
+        elif cleaned.startswith('```'):
+            cleaned = cleaned[3:]
+        
+        if cleaned.endswith('```'):
+            cleaned = cleaned[:-3]
+        
+        # Remove extra quotes if the entire response is wrapped in quotes
+        if cleaned.startswith('"') and cleaned.endswith('"') and cleaned.count('"') == 2:
+            cleaned = cleaned[1:-1]
+        
+        # Handle cases where response starts with newline followed by quote
+        if cleaned.startswith('\n"') and cleaned.endswith('"'):
+            cleaned = cleaned[2:-1]
+        
+        return cleaned.strip()
+    
+    async def analyze_profile(self, profile_data: Dict[str, Any], config: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Analyze a profile using AI and return ICP scores"""
+        try:
+            if not self.openai_client:
+                # Return default scores if OpenAI is not configured
+                return {
+                    "icp_score": 50.0,
+                    "icp_percentage": 50.0,
+                    "icp_grade": "C",
+                    "icp_breakdown": {
+                        "industry_fit": 5.0,
+                        "role_fit": 5.0,
+                        "company_size_fit": 5.0,
+                        "decision_maker": 5.0,
+                        "reasoning": "OpenAI not configured"
+                    }
+                }
+            
+            # Get default config if none provided
+            if not config:
+                config = await self._get_default_config()
+            
+            # Prepare profile data for analysis - use all available fields from Apollo data (matching main.py)
+            profile_summary = {
+                "fullName": profile_data.get("fullName", ""),
+                "headline": profile_data.get("headline", ""),
+                "jobTitle": profile_data.get("jobTitle", ""),
+                "companyName": profile_data.get("companyName", ""),
+                "companyIndustry": profile_data.get("companyIndustry", ""),
+                "companySize": profile_data.get("companySize", ""),
+                "location": profile_data.get("location", ""),
+                "city": profile_data.get("city", ""),
+                "state": profile_data.get("state", ""),
+                "country": profile_data.get("country", ""),
+                "seniority": profile_data.get("seniority", ""),
+                "departments": profile_data.get("departments", ""),
+                "subdepartments": profile_data.get("subdepartments", ""),
+                "functions": profile_data.get("functions", ""),
+                "companyWebsite": profile_data.get("companyWebsite", ""),
+                "companyDomain": profile_data.get("companyDomain", ""),
+                "companyFoundedYear": profile_data.get("companyFoundedYear", ""),
+                "work_experience_months": profile_data.get("work_experience_months", ""),
+            }
+            
+            # Remove empty fields to reduce noise (matching main.py)
+            profile_summary = {k: v for k, v in profile_summary.items() if v}
+            
+            # Get ICP criteria from config
+            target_industries = config.get("target_industries", [])
+            target_roles = config.get("target_roles", [])
+            target_company_sizes = config.get("company_size_ranges", [])
+            custom_prompt = config.get("custom_prompt", "")
+            
+            # Use the default prompt from main.py
+            prompt_template = self._get_default_prompt()
+            # Safely replace the profile_json placeholder to avoid format string errors
+            profile_json_str = json.dumps(profile_summary, indent=2)
+            prompt = prompt_template.replace("{profile_json}", profile_json_str)
+            
+            # Call OpenAI API
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an expert at analyzing LinkedIn profiles for sales qualification. Always respond with valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=500
+            )
+            
+            # Extract and clean the response
+            ai_response = response.choices[0].message.content
+            cleaned_response = self.clean_ai_json_response(ai_response)
+            
+            # Parse JSON response
+            try:
+                scores = json.loads(cleaned_response)
+                
+                # Validate the analysis - match main.py structure
+                required_fields = ["industry_fit", "role_fit", "company_size_fit", "decision_maker", 
+                                 "total_score", "icp_category", "reasoning"]
+                
+                # Handle potential field mismatch between prompt and code
+                if "company_maturity_fit" in scores and "company_size_fit" not in scores:
+                    scores["company_size_fit"] = scores["company_maturity_fit"]
+                    
+                for field in required_fields:
+                    if field not in scores:
+                        if field in ["industry_fit", "role_fit", "company_size_fit", "decision_maker"]:
+                            scores[field] = 5.0  # Default score
+                        elif field == "total_score":
+                            scores[field] = 5.0
+                        elif field == "icp_category":
+                            scores[field] = "none"
+                        elif field == "reasoning":
+                            scores[field] = "Default reasoning"
+                            
+                # Ensure scores are numbers between 0 and 10
+                score_fields = ["industry_fit", "role_fit", "company_size_fit", "decision_maker", "total_score"]
+                for field in score_fields:
+                    if field in scores:
+                        score = scores[field]
+                        if not isinstance(score, (int, float)) or score < 0 or score > 10:
+                            scores[field] = 5.0  # Default to middle score
+                        scores[field] = max(0, min(10, float(scores[field])))
+                
+                # Use the total_score from AI response (matching main.py logic)
+                total_score = scores.get("total_score", 5.0)
+                
+                # Calculate score percentage (matching main.py: total_score * 10)
+                score_percentage = min(100, total_score * 10)
+                
+                # Determine grade based on score percentage (matching main.py)
+                if score_percentage >= 80:
+                    grade = "A+"
+                elif score_percentage >= 70:
+                    grade = "A"
+                elif score_percentage >= 60:
+                    grade = "B+"
+                elif score_percentage >= 50:
+                    grade = "B"
+                elif score_percentage >= 40:
+                    grade = "C+"
+                elif score_percentage >= 30:
+                    grade = "C"
+                else:
+                    grade = "D"
+                
+                # Use reasoning from AI response
+                reasoning = scores.get("reasoning", "AI analysis completed")
+                
+                return {
+                    "icp_score": round(total_score, 2),
+                    "icp_percentage": round(score_percentage, 2),
+                    "icp_grade": grade,
+                    "icp_breakdown": {
+                        "industry_fit": scores["industry_fit"],
+                        "role_fit": scores["role_fit"],
+                        "company_size_fit": scores["company_size_fit"],
+                        "decision_maker": scores["decision_maker"],
+                        "reasoning": reasoning
+                    }
+                }
+                
+            except json.JSONDecodeError as e:
+                print(f"JSON decode error in AI ICP scoring: {e}")
+                print(f"Cleaned response: {cleaned_response}")
+                # Return default scores on JSON error
+                return {
+                    "icp_score": 50.0,
+                    "icp_percentage": 50.0,
+                    "icp_grade": "C",
+                    "icp_breakdown": {
+                        "industry_fit": 5.0,
+                        "role_fit": 5.0,
+                        "company_size_fit": 5.0,
+                        "decision_maker": 5.0,
+                        "reasoning": "JSON parsing error"
+                    }
+                }
+                
+        except Exception as e:
+            print(f"Error in AI ICP scoring: {e}")
+            # Return default scores on any error
+            error_msg = str(e).replace('{', '{{').replace('}', '}}')
+            return {
+                "icp_score": 50.0,
+                "icp_percentage": 50.0,
+                "icp_grade": "C",
+                "icp_breakdown": {
+                    "industry_fit": 5.0,
+                    "role_fit": 5.0,
+                    "company_size_fit": 5.0,
+                    "decision_maker": 5.0,
+                    "reasoning": f"Error: {error_msg}"
+                }
+            }
+    
+    def _calculate_grade(self, score_percentage: float) -> str:
+        """Calculate letter grade from score percentage"""
+        if score_percentage >= 90:
+            return "A+"
+        elif score_percentage >= 80:
+            return "A"
+        elif score_percentage >= 70:
+            return "B+"
+        elif score_percentage >= 60:
+            return "B"
+        elif score_percentage >= 50:
+            return "C+"
+        elif score_percentage >= 40:
+            return "C"
+        elif score_percentage >= 30:
+            return "D+"
+        else:
+            return "D"
+    
+    def _generate_reasoning(self, profile_summary: Dict[str, Any], scores: Dict[str, float]) -> str:
+        """Generate human-readable reasoning for the score"""
+        reasoning_parts = []
+        
+        # Industry reasoning
+        if scores["industry_fit"] >= 8:
+            reasoning_parts.append(f"Strong industry match with {profile_summary['industry']}")
+        elif scores["industry_fit"] >= 5:
+            reasoning_parts.append(f"Partial industry alignment with {profile_summary['industry']}")
+        else:
+            reasoning_parts.append("Limited industry fit")
+        
+        # Role reasoning
+        if scores["role_fit"] >= 8:
+            reasoning_parts.append(f"Excellent role match: {profile_summary['job_title']}")
+        elif scores["role_fit"] >= 5:
+            reasoning_parts.append(f"Good role alignment: {profile_summary['job_title']}")
+        else:
+            reasoning_parts.append("Role doesn't strongly align with targets")
+        
+        # Company size reasoning
+        if scores["company_size_fit"] >= 8:
+            reasoning_parts.append(f"Company size ({profile_summary['company_size']}) fits target criteria")
+        elif scores["company_size_fit"] >= 5:
+            reasoning_parts.append(f"Company size ({profile_summary['company_size']}) partially matches")
+        else:
+            reasoning_parts.append("Company size outside preferred range")
+        
+        # Decision maker reasoning
+        if scores["decision_maker"] >= 8:
+            reasoning_parts.append("Strong decision-making authority indicated")
+        elif scores["decision_maker"] >= 5:
+            reasoning_parts.append("Some decision-making influence")
+        else:
+            reasoning_parts.append("Limited decision-making authority")
+        
+        return ". ".join(reasoning_parts) + "."
+    
+    def _get_default_prompt(self) -> str:
+        """Get the default ICP prompt"""
+        return """You are an ICP (Ideal Customer Profile) evaluator.
 
 Your task is to assess how well this LinkedIn profile matches either of our two ICPs: "operations" or "field_service", using the limited structured fields available.
 
@@ -137,113 +408,161 @@ Output Format:
     "reasoning": "Brief reasoning based on the fields provided"
 }}"""
 
-    def analyze_profile(self, profile: Dict) -> Dict:
-        """Analyze a LinkedIn profile using AI to determine ICP fit"""
+    def get_prompt(self) -> Dict[str, Any]:
+        """Get the current ICP prompt configuration"""
         try:
-            # Prepare profile data for analysis
-            profile_for_analysis = {
-                "fullName": profile.get("fullName", ""),
-                "headline": profile.get("headline", ""),
-                "jobTitle": profile.get("jobTitle", ""),
-                "companyName": profile.get("companyName", ""),
-                "companyIndustry": profile.get("companyIndustry", ""),
-                "companySize": profile.get("companySize", ""),
-                "location": profile.get("location", ""),
-                "city": profile.get("city", ""),
-                "state": profile.get("state", ""),
-                "country": profile.get("country", ""),
-                "seniority": profile.get("seniority", ""),
-                "departments": profile.get("departments", ""),
-                "subdepartments": profile.get("subdepartments", ""),
-                "functions": profile.get("functions", ""),
-                "companyWebsite": profile.get("companyWebsite", ""),
-                "companyDomain": profile.get("companyDomain", ""),
-                "companyFoundedYear": profile.get("companyFoundedYear", ""),
-                "work_experience_months": profile.get("work_experience_months", ""),
-            }
-            
-            # Remove empty fields to reduce noise
-            profile_for_analysis = {k: v for k, v in profile_for_analysis.items() if v}
-            
-            # Get AI analysis
-            response = self.llm.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "user", "content": self.default_icp_prompt.format(
-                        profile_json=json.dumps(profile_for_analysis, indent=2)
-                    )}
-                ],
-                temperature=0
-            )
-            
-            content = response.choices[0].message.content.strip()
-            
-            # Clean the response content to ensure it's valid JSON
-            if content.startswith('```json'):
-                content = content[7:]
-            if content.endswith('```'):
-                content = content[:-3]
-            content = content.strip()
-            
-            try:
-                analysis = json.loads(content)
-            except json.JSONDecodeError as e:
-                raise Exception(f"Failed to parse AI response: {str(e)}")
-            
-            # Validate the analysis
-            required_fields = ["industry_fit", "role_fit", "company_size_fit", "decision_maker", 
-                             "total_score", "icp_category", "reasoning"]
-            
-            # Handle potential field mismatch between prompt and code
-            if "company_maturity_fit" in analysis and "company_size_fit" not in analysis:
-                analysis["company_size_fit"] = analysis["company_maturity_fit"]
-                
-            for field in required_fields:
-                if field not in analysis:
-                    raise Exception(f"Missing required field in AI response: {field}")
-                
-            # Ensure scores are numbers between 0 and 10
-            score_fields = ["industry_fit", "role_fit", "company_size_fit", "decision_maker", "total_score"]
-            for field in score_fields:
-                score = analysis[field]
-                if not isinstance(score, (int, float)) or score < 0 or score > 10:
-                    raise Exception(f"Invalid score in {field}: {score}")
-            
-            # Calculate score percentage
-            score_percentage = min(100, analysis["total_score"] * 10)
-            
-            # Determine grade based on score percentage
-            if score_percentage >= 80:
-                grade = "A+"
-            elif score_percentage >= 70:
-                grade = "A"
-            elif score_percentage >= 60:
-                grade = "B+"
-            elif score_percentage >= 50:
-                grade = "B"
-            elif score_percentage >= 40:
-                grade = "C+"
-            elif score_percentage >= 30:
-                grade = "C"
-            else:
-                grade = "D"
-            
-            return {
-                "total_score": analysis["total_score"],
-                "score_percentage": score_percentage,
-                "grade": grade,
-                "breakdown": {
-                    "industry_fit": analysis["industry_fit"],
-                    "role_fit": analysis["role_fit"],
-                    "company_size_fit": analysis["company_size_fit"],
-                    "decision_maker": analysis["decision_maker"],
-                    "icp_category": analysis["icp_category"],
-                    "reasoning": analysis["reasoning"]
+            # Try to get custom prompt from database
+            result = self.supabase.table("icp_prompt_config").select("*").limit(1).execute()
+            if result.data:
+                config = result.data[0]
+                return {
+                    "status": "success",
+                    "data": {
+                        "prompt": config.get("prompt", self._get_default_prompt()),
+                        "default_values": {
+                            "target_roles": config.get("target_roles", "Operations Manager, Facility Manager, Maintenance Manager"),
+                            "target_industries": config.get("target_industries", "Manufacturing, Industrial, Automotive"),
+                            "target_company_sizes": config.get("target_company_sizes", "51-200, 201-500, 501-1000"),
+                            "target_locations": config.get("target_locations", "United States"),
+                            "target_seniority": config.get("target_seniority", "Manager, Director, VP, C-Level")
+                        }
+                    }
+                }
+        except Exception as e:
+            print(f"Error fetching ICP prompt config: {e}")
+        
+        # Return default prompt if none found
+        return {
+            "status": "success",
+            "data": {
+                "prompt": self._get_default_prompt(),
+                "default_values": {
+                    "target_roles": "Operations Manager, Facility Manager, Maintenance Manager",
+                    "target_industries": "Manufacturing, Industrial, Automotive",
+                    "target_company_sizes": "51-200, 201-500, 501-1000",
+                    "target_locations": "United States",
+                    "target_seniority": "Manager, Director, VP, C-Level"
                 }
             }
+        }
+
+    def update_prompt(self, prompt: str) -> Dict[str, Any]:
+        """Update the ICP prompt configuration"""
+        try:
+            # Check if config exists
+            result = self.supabase.table("icp_prompt_config").select("*").limit(1).execute()
             
+            if result.data:
+                # Update existing config
+                self.supabase.table("icp_prompt_config").update({
+                    "prompt": prompt,
+                    "updated_at": datetime.now().isoformat()
+                }).eq("id", result.data[0]["id"]).execute()
+            else:
+                # Create new config
+                self.supabase.table("icp_prompt_config").insert({
+                    "prompt": prompt,
+                    "created_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat()
+                }).execute()
+            
+            return {"status": "success", "message": "Prompt updated successfully"}
         except Exception as e:
-            raise Exception(f"Error in AI ICP scoring: {str(e)}")
+            print(f"Error updating ICP prompt: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def update_default_values(self, default_values: Dict[str, str]) -> Dict[str, Any]:
+        """Update the default values for ICP configuration"""
+        try:
+            # Check if config exists
+            result = self.supabase.table("icp_prompt_config").select("*").limit(1).execute()
+            
+            update_data = {
+                "target_roles": default_values.get("target_roles", ""),
+                "target_industries": default_values.get("target_industries", ""),
+                "target_company_sizes": default_values.get("target_company_sizes", ""),
+                "target_locations": default_values.get("target_locations", ""),
+                "target_seniority": default_values.get("target_seniority", ""),
+                "updated_at": datetime.now().isoformat()
+            }
+            
+            if result.data:
+                # Update existing config
+                self.supabase.table("icp_prompt_config").update(update_data).eq("id", result.data[0]["id"]).execute()
+            else:
+                # Create new config
+                update_data["created_at"] = datetime.now().isoformat()
+                self.supabase.table("icp_prompt_config").insert(update_data).execute()
+            
+            return {"status": "success", "message": "Default values updated successfully"}
+        except Exception as e:
+            print(f"Error updating default values: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    def update_prompt_and_values(self, prompt: str, default_values: Dict[str, str]) -> Dict[str, Any]:
+        """Update both prompt and default values in a single operation"""
+        try:
+            # Check if config exists
+            result = self.supabase.table("icp_prompt_config").select("*").limit(1).execute()
+            
+            update_data = {
+                "prompt": prompt,
+                "target_roles": default_values.get("target_roles", ""),
+                "target_industries": default_values.get("target_industries", ""),
+                "target_company_sizes": default_values.get("target_company_sizes", ""),
+                "target_locations": default_values.get("target_locations", ""),
+                "target_seniority": default_values.get("target_seniority", ""),
+                "updated_at": datetime.now().isoformat()
+            }
+            
+            if result.data:
+                # Update existing config
+                self.supabase.table("icp_prompt_config").update(update_data).eq("id", result.data[0]["id"]).execute()
+            else:
+                # Create new config
+                update_data["created_at"] = datetime.now().isoformat()
+                self.supabase.table("icp_prompt_config").insert(update_data).execute()
+            
+            return {"status": "success", "message": "Prompt and default values updated successfully"}
+        except Exception as e:
+            print(f"Error updating prompt and default values: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def _get_default_config(self) -> Dict[str, Any]:
+        """Get default ICP configuration"""
+        try:
+            result = self.supabase.table("icp_settings").select("*").limit(1).execute()
+            if result.data:
+                config = result.data[0]
+                # Convert to expected format
+                return {
+                    "target_industries": config.get("target_industries", ["Manufacturing", "Industrial", "Automotive"]),
+                    "target_roles": config.get("target_job_titles", ["Operations Manager", "Facility Manager", "Maintenance Manager"]),
+                    "company_size_ranges": config.get("target_company_sizes", ["51-200", "201-500", "501-1000"]),
+                    "custom_prompt": config.get("custom_prompt", ""),
+                    "weights": {
+                        "industry_fit": 30,
+                        "role_fit": 30,
+                        "company_size_fit": 20,
+                        "decision_maker": 20
+                    }
+                }
+        except Exception as e:
+            print(f"Error fetching ICP config: {e}")
+        
+        # Return default config if none found
+        return {
+            "target_industries": ["Manufacturing", "Industrial", "Automotive", "Technology", "Healthcare"],
+            "target_roles": ["Operations Manager", "Facility Manager", "Maintenance Manager", "Plant Manager", "Production Manager", "COO", "VP Operations"],
+            "company_size_ranges": ["51-200", "201-500", "501-1000", "1001-5000"],
+            "custom_prompt": "You are an expert lead qualification analyst. Analyze the LinkedIn profile and score based on industry fit, role relevance, company size, and decision-making authority.",
+            "weights": {
+                "industry_fit": 30,
+                "role_fit": 30,
+                "company_size_fit": 20,
+                "decision_maker": 20
+            }
+        }
 
 class LeadService:
     """Service for lead generation and management"""
@@ -264,7 +583,6 @@ class LeadService:
                 apify_tokens = [apify_tokens]
         
         self.token_queue = APIKeyQueue(apify_tokens)
-        self.ai_icp_scorer = AIICPScorer(self.settings.OPENAI_API_KEY)
         
         # Track used and exhausted keys
         self.used_keys = set()
@@ -277,9 +595,11 @@ class LeadService:
         self.google_api_key = getattr(self.settings, 'GOOGLE_API_KEY', None)
         self.google_cse_id = getattr(self.settings, 'GOOGLE_CSE_ID', None)
         
-        # Status tracking for real-time updates
+        # Status tracking for polling-based updates
         self.status_sessions = {}
-        self.status_queues = {}
+        
+        # Initialize AI ICP scorer
+        self.ai_icp_scorer = AIICPScorer()
     
     async def generate_leads(self, params: Dict[str, Any], session_id: str = None) -> Dict[str, Any]:
         """Generate leads using specified method"""
@@ -305,6 +625,8 @@ class LeadService:
                     "message": "Lead generation started",
                     "method": method
                 })
+                # Small delay to ensure frontend has time to start polling
+                await asyncio.sleep(0.5)
             
             leads = []
             
@@ -331,37 +653,53 @@ class LeadService:
             
             # Score leads with ICP (only for Apollo method, Google+Apify already includes ICP scoring)
             if self.settings.OPENAI_API_KEY and leads and method == "apollo":
+                # Calculate ETA (approximately 2-3 seconds per lead)
+                estimated_seconds = len(leads) * 2.5
+                eta_minutes = int(estimated_seconds // 60)
+                eta_seconds = int(estimated_seconds % 60)
+                eta_text = f"{eta_minutes}m {eta_seconds}s" if eta_minutes > 0 else f"{eta_seconds}s"
+                
                 # Emit status update for ICP scoring start
                 if session_id:
                     self.emit_status(session_id, {
                         "type": "icp_scoring_started",
-                        "message": f"Scoring {len(leads)} leads with ICP criteria",
+                        "message": f"Scoring based on ICP... (ETA: {eta_text})",
                         "total_leads": len(leads),
+                        "estimated_duration": estimated_seconds,
+                        "eta_text": eta_text,
                         "method": method
                     })
+                    # Add delay to ensure frontend can catch this status
+                    await asyncio.sleep(1.0)
                 
                 for idx, lead in enumerate(leads):
+                    # AI ICP scoring with new robust implementation
                     try:
-                        icp_analysis = self.ai_icp_scorer.analyze_profile(lead)
-                        lead["icp_score"] = icp_analysis["total_score"]  # Use total_score (0-10) for icp_score
-                        lead["icp_percentage"] = icp_analysis["score_percentage"]  # Use score_percentage (0-100) for icp_percentage
-                        lead["icp_grade"] = icp_analysis["grade"]
-                        lead["icp_breakdown"] = icp_analysis["breakdown"]
-                        
-                        # Emit progress update for each scored lead
-                        if session_id:
-                            self.emit_status(session_id, {
-                                "type": "lead_scored",
-                                "message": f"Scored lead {idx + 1} of {len(leads)}",
-                                "current_lead": idx + 1,
-                                "total_leads": len(leads),
-                                "method": method
-                            })
+                        icp_analysis = await self.ai_icp_scorer.analyze_profile(lead)
+                        lead["icp_score"] = icp_analysis["icp_score"]
+                        lead["icp_percentage"] = icp_analysis["icp_percentage"]
+                        lead["icp_grade"] = icp_analysis["icp_grade"]
+                        lead["icp_breakdown"] = icp_analysis["icp_breakdown"]
                     except Exception as e:
-                        print(f"ICP scoring failed for lead: {e}")
-                        lead["icp_score"] = 0
-                        lead["icp_percentage"] = 0
-                        lead["icp_grade"] = "D"
+                        print(f"Error in AI ICP scoring for lead {idx}: {e}")
+                        # Fallback to default scores on error
+                        lead["icp_score"] = 50.0
+                        lead["icp_percentage"] = 50.0
+                        lead["icp_grade"] = "C"
+                        error_msg = str(e).replace('{', '{{').replace('}', '}}')
+                        lead["icp_breakdown"] = {"reasoning": f"Error in AI scoring: {error_msg}"}
+                    
+                    # Emit progress update for each scored lead
+                    if session_id:
+                        self.emit_status(session_id, {
+                            "type": "lead_scored",
+                            "message": f"Processed lead {idx + 1} of {len(leads)}",
+                            "current_lead": idx + 1,
+                            "total_leads": len(leads),
+                            "method": method
+                        })
+                        # Add delay to ensure frontend can catch this status
+                        await asyncio.sleep(0.3)
                 
                 # Emit completion status for ICP scoring
                 if session_id:
@@ -371,6 +709,8 @@ class LeadService:
                         "leads_scored": len(leads),
                         "method": method
                     })
+                    # Add delay to ensure frontend can catch this status
+                    await asyncio.sleep(1.0)
             
             # Save leads to database
             save_result = None
@@ -384,7 +724,7 @@ class LeadService:
                         "method": method
                     })
                 
-                save_result = await self._save_leads_to_db(leads)
+                save_result = await self._save_leads_to_db(leads, params.get("user_id"))
                 
                 # Emit completion status for database saving
                 if session_id:
@@ -403,6 +743,9 @@ class LeadService:
                     "total_leads": len(leads),
                     "method": method
                 })
+                # Add delay to ensure frontend can catch the completion status
+                await asyncio.sleep(2.0)
+                # Session will be automatically cleaned up after 60 seconds
             
             return {
                 "status": "success",
@@ -414,9 +757,18 @@ class LeadService:
             }
             
         except Exception as e:
+            # Emit error status if session_id is available
+            if session_id:
+                self.emit_status(session_id, {
+                    "type": "error",
+                    "message": f"Lead generation failed: {str(e).replace('{', '{{').replace('}', '}}')}",
+                    "method": method if 'method' in locals() else "unknown"
+                })
+                # Session will be automatically cleaned up after 60 seconds
+            
             return {
                 "status": "error",
-                "message": f"Lead generation failed: {str(e)}"
+                "message": f"Lead generation failed: {str(e).replace('{', '{{').replace('}', '}}')}"
             }
     
     def get_next_available_key(self):
@@ -465,6 +817,15 @@ class LeadService:
             max_retries = self.token_queue.total_keys
             num_results = params.get("limit", 50)
             
+            # Emit Apollo URL to frontend
+            if session_id:
+                self.emit_status(session_id, {
+                    "type": "apollo_url_generated",
+                    "message": "Generated Apollo search URL",
+                    "apollo_url": apollo_url,
+                    "method": "apollo"
+                })
+            
             for attempt in range(max_retries):
                 try:
                     current_api_key = self.get_next_available_key()
@@ -480,7 +841,9 @@ class LeadService:
                         "contact_email_status_v2": True,
                         "include_email": True,
                         "max_result": num_results,
-                        "url": apollo_url
+                        "url": apollo_url,
+                        "include_email": True,
+                        "contact_email_status_v2_verified": True
                     }
 
                     headers = {
@@ -797,6 +1160,8 @@ class LeadService:
                     "job_titles": job_titles,
                     "locations": locations
                 })
+                # Add delay to ensure frontend can catch this status
+                await asyncio.sleep(1.0)
             
             # Step 1: Search for LinkedIn profiles using Google
             linkedin_profiles = await self.search_linkedin_profiles_google(
@@ -820,6 +1185,8 @@ class LeadService:
                     "message": f"Found {len(linkedin_profiles)} LinkedIn profiles",
                     "profiles_found": len(linkedin_profiles)
                 })
+                # Add delay to ensure frontend can catch this status
+                await asyncio.sleep(1.0)
             
             # Step 2: Enrich profiles using Apify
             enriched_profiles = await self.batch_enrich_profiles([p['linkedin_url'] for p in linkedin_profiles], session_id)
@@ -848,6 +1215,8 @@ class LeadService:
                 "total_profiles": total_profiles,
                 "completed": 0
             })
+            # Add delay to ensure frontend can catch this status
+            await asyncio.sleep(1.0)
         
         for i, linkedin_url in enumerate(linkedin_urls, 1):
             try:
@@ -860,9 +1229,12 @@ class LeadService:
                         "total_profiles": total_profiles,
                         "linkedin_url": linkedin_url
                     })
+                    # Add delay to ensure frontend can catch this status
+                    await asyncio.sleep(0.5)
                 
-                enriched_profile = await self.enrich_profile_with_apify(linkedin_url)
-                if enriched_profile:
+                enriched_profile_list = await self.enrich_profile_with_apify(linkedin_url)
+                if enriched_profile_list and len(enriched_profile_list) > 0:
+                    enriched_profile = enriched_profile_list[0]  # Get the first (and should be only) profile
                     enriched_profiles.append(enriched_profile)
                     
                     # Emit success update for individual profile
@@ -1022,21 +1394,20 @@ class LeadService:
                             "scraping_status": "success"
                         }
                         
-                        # Perform ICP scoring for each profile
+                        # AI ICP scoring with new implementation
                         try:
-                            icp_analysis = self.ai_icp_scorer.analyze_profile(enriched_profile)
-                            # Map ICP analysis results to expected field names
-                            enriched_profile["icp_score"] = icp_analysis["total_score"]
-                            enriched_profile["icp_percentage"] = icp_analysis["score_percentage"]
-                            enriched_profile["icp_grade"] = icp_analysis["grade"]
-                            enriched_profile["icp_breakdown"] = icp_analysis["breakdown"]
+                            icp_result = await self.ai_icp_scorer.analyze_profile(enriched_profile)
+                            enriched_profile["icp_score"] = icp_result.get("icp_score", 0)
+                            enriched_profile["icp_percentage"] = icp_result.get("icp_percentage", 0)
+                            enriched_profile["icp_grade"] = icp_result.get("icp_grade", "D")
+                            enriched_profile["icp_breakdown"] = icp_result.get("icp_breakdown", {"reasoning": "No breakdown available"})
+                            print(f"AI ICP scoring successful for {enriched_profile.get('fullName', 'Unknown')}: {enriched_profile['icp_percentage']}%")
                         except Exception as e:
-                            print(f"ICP scoring failed for {enriched_profile.get('linkedin_url', 'unknown')}: {str(e)}")
-                            # Set default ICP values if scoring fails
+                            print(f"AI ICP scoring failed for profile: {e}")
                             enriched_profile["icp_score"] = 0
                             enriched_profile["icp_percentage"] = 0
                             enriched_profile["icp_grade"] = "D"
-                            enriched_profile["icp_breakdown"] = {"reasoning": "ICP scoring failed"}
+                            enriched_profile["icp_breakdown"] = {"reasoning": "AI ICP scoring failed"}
                         
                         enriched_profiles.append(enriched_profile)
                     
@@ -1182,6 +1553,15 @@ class LeadService:
     
     def map_profile_fields_to_db(self, profile: Dict) -> Dict:
         """Map camelCase profile fields to snake_case database column names."""
+        # Handle case where profile might be a list instead of dict
+        if isinstance(profile, list):
+            if len(profile) > 0 and isinstance(profile[0], dict):
+                profile = profile[0]  # Take the first item if it's a list of dicts
+            else:
+                return {}  # Return empty dict if list is empty or contains non-dict items
+        elif not isinstance(profile, dict):
+            return {}  # Return empty dict if profile is neither list nor dict
+            
         # Field mapping from camelCase (Apollo/Apify) to snake_case (database)
         field_mapping = {
             'fullName': 'full_name',
@@ -1314,7 +1694,7 @@ class LeadService:
         
         return base_columns.union(extended_columns)
 
-    async def _save_leads_to_db(self, leads: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _save_leads_to_db(self, leads: List[Dict[str, Any]], user_id: str = None) -> Dict[str, Any]:
         """Save leads to Supabase database with graceful handling of missing columns."""
         if not leads:
             return {"status": "warning", "message": "No leads to save to Supabase."}
@@ -1350,6 +1730,8 @@ class LeadService:
                         filtered_profile["created_at"] = datetime.now().isoformat()
                     if "updated_at" not in filtered_profile:
                         filtered_profile["updated_at"] = datetime.now().isoformat()
+                    if user_id and "user_id" not in filtered_profile:
+                        filtered_profile["user_id"] = user_id
                         
                     # Insert data into Supabase
                     result = self.supabase.table("leads").insert(filtered_profile).execute()
@@ -1394,6 +1776,7 @@ class LeadService:
     
     async def get_leads(
         self,
+        user_id: str,
         page: int = 1,
         limit: int = 50,
         search: str = "",
@@ -1407,8 +1790,8 @@ class LeadService:
     ) -> Dict[str, Any]:
         """Get leads with filtering and pagination"""
         try:
-            # Build query
-            query = self.supabase.table("leads").select("*", count="exact")
+            # Build query with user isolation
+            query = self.supabase.table("leads").select("*", count="exact").eq("user_id", user_id)
             
             # Apply filters
             if search:
@@ -1459,13 +1842,13 @@ class LeadService:
         except Exception as e:
             raise Exception(f"Error fetching leads: {str(e)}")
     
-    async def update_lead(self, lead_id: str, lead_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def update_lead(self, user_id: str, lead_id: str, lead_data: Dict[str, Any]) -> Dict[str, Any]:
         """Update a lead"""
         try:
             # Add updated timestamp
             lead_data["updated_at"] = datetime.now().isoformat()
             
-            result = self.supabase.table("leads").update(lead_data).eq("id", lead_id).execute()
+            result = self.supabase.table("leads").update(lead_data).eq("id", lead_id).eq("user_id", user_id).execute()
             
             return {
                 "status": "success",
@@ -1475,10 +1858,10 @@ class LeadService:
         except Exception as e:
             raise Exception(f"Error updating lead: {str(e)}")
     
-    async def delete_lead(self, lead_id: str) -> Dict[str, Any]:
+    async def delete_lead(self, user_id: str, lead_id: str) -> Dict[str, Any]:
         """Delete a lead"""
         try:
-            result = self.supabase.table("leads").delete().eq("id", lead_id).execute()
+            result = self.supabase.table("leads").delete().eq("id", lead_id).eq("user_id", user_id).execute()
             
             return {
                 "status": "success",
@@ -1488,10 +1871,10 @@ class LeadService:
         except Exception as e:
             raise Exception(f"Error deleting lead: {str(e)}")
     
-    async def bulk_delete_leads(self, lead_ids: List[str]) -> Dict[str, Any]:
+    async def bulk_delete_leads(self, user_id: str, lead_ids: List[str]) -> Dict[str, Any]:
         """Delete multiple leads"""
         try:
-            result = self.supabase.table("leads").delete().in_("id", lead_ids).execute()
+            result = self.supabase.table("leads").delete().in_("id", lead_ids).eq("user_id", user_id).execute()
             
             return {
                 "status": "success",
@@ -1501,7 +1884,7 @@ class LeadService:
         except Exception as e:
             raise Exception(f"Error deleting leads: {str(e)}")
     
-    async def get_metrics(self, time_range: str = "30d") -> Dict[str, Any]:
+    async def get_metrics(self, user_id: str, time_range: str = "30d") -> Dict[str, Any]:
         """Get lead metrics"""
         try:
             # Calculate date range
@@ -1515,8 +1898,8 @@ class LeadService:
             else:
                 start_date = now - timedelta(days=30)
             
-            # Fetch all leads
-            all_leads_result = self.supabase.table("leads").select("*").execute()
+            # Fetch all leads for the user
+            all_leads_result = self.supabase.table("leads").select("*").eq("user_id", user_id).execute()
             all_leads = all_leads_result.data or []
             
             # Fetch recent leads
@@ -1540,6 +1923,7 @@ class LeadService:
             top_grade = max(grade_counts.items(), key=lambda x: x[1])[0] if grade_counts else "D"
             
             # Email metrics (simplified)
+            emails_available = len([lead for lead in all_leads if lead.get("email") and lead.get("email").strip()])
             emails_sent = len([lead for lead in all_leads if lead.get("email_status") == "sent"])
             emails_opened = len([lead for lead in all_leads if lead.get("email_status") == "opened"])
             emails_clicked = len([lead for lead in all_leads if lead.get("email_status") == "clicked"])
@@ -1553,6 +1937,7 @@ class LeadService:
                         "newLeads": new_leads,
                         "averageScore": round(average_score, 2),
                         "topGrade": top_grade,
+                        "emailsAvailable": emails_available,
                         "emailsSent": emails_sent,
                         "emailsOpened": emails_opened,
                         "emailsClicked": emails_clicked,
@@ -1572,47 +1957,125 @@ class LeadService:
     
     def create_status_session(self, session_id: str):
         """Create a new status tracking session"""
+        print(f"[DEBUG] Creating status session for {session_id}")
         self.status_sessions[session_id] = {
             "created_at": datetime.now(),
-            "active": True
+            "active": True,
+            "status": "initializing",
+            "message": "Starting lead generation...",
+            "progress": 0,
+            "total": 0,
+            "completed": False,
+            "error": None,
+            "status_history": [],  # Track all status updates
+            "current_status": {}   # Current status data
         }
-        self.status_queues[session_id] = asyncio.Queue()
+        print(f"[DEBUG] Status session created. Active sessions: {list(self.status_sessions.keys())}")
     
     def emit_status(self, session_id: str, status: Dict[str, Any]):
-        """Emit a status update for a session"""
-        if session_id in self.status_queues:
-            try:
-                self.status_queues[session_id].put_nowait({
-                    "timestamp": datetime.now().isoformat(),
-                    **status
-                })
-            except asyncio.QueueFull:
-                pass  # Skip if queue is full
+        """Update status for a session"""
+        print(f"[DEBUG] emit_status called for session {session_id} with status: {status}")
+        if session_id in self.status_sessions:
+            # Create timestamped status update
+            timestamped_status = {
+                "timestamp": datetime.now().isoformat(),
+                **status
+            }
+            
+            # Add to status history
+            self.status_sessions[session_id]["status_history"].append(timestamped_status)
+            
+            # Replace current status completely (don't preserve old fields)
+            self.status_sessions[session_id]["current_status"] = timestamped_status.copy()
+            
+            # Update main session fields for backward compatibility
+            self.status_sessions[session_id].update(timestamped_status)
+            
+            # Mark as completed if it's a completion status
+            if status.get("type") in ["generation_completed", "error"]:
+                self.status_sessions[session_id]["completed"] = True
+                self.status_sessions[session_id]["active"] = False
+                
+            print(f"[DEBUG] Status updated. History length: {len(self.status_sessions[session_id]['status_history'])}")
+            print(f"[DEBUG] Current status type: {self.status_sessions[session_id]['current_status'].get('type', 'unknown')}")
+        else:
+            print(f"[DEBUG] No status session found for session {session_id}")
     
-    async def get_status_updates(self, session_id: str) -> AsyncGenerator[Dict[str, Any], None]:
-        """Get status updates for a session via async generator"""
-        if session_id not in self.status_queues:
-            self.create_status_session(session_id)
+    def get_status(self, session_id: str, include_history: bool = False) -> Dict[str, Any]:
+        """Get current status for a session"""
+        print(f"[DEBUG] get_status called for session {session_id}, include_history={include_history}")
         
-        queue = self.status_queues[session_id]
+        # Clean up old completed sessions (older than 30 seconds)
+        self._cleanup_old_sessions()
         
-        try:
-            while self.status_sessions.get(session_id, {}).get("active", False):
-                try:
-                    # Wait for status update with timeout
-                    status = await asyncio.wait_for(queue.get(), timeout=30.0)
-                    yield status
-                except asyncio.TimeoutError:
-                    # Send heartbeat to keep connection alive
-                    yield {"type": "heartbeat", "timestamp": datetime.now().isoformat()}
-        finally:
-            # Clean up session
-            if session_id in self.status_sessions:
-                del self.status_sessions[session_id]
-            if session_id in self.status_queues:
-                del self.status_queues[session_id]
+        if session_id not in self.status_sessions:
+            print(f"[DEBUG] No status session found for session {session_id}")
+            return {
+                "error": "Session not found",
+                "status": "not_found"
+            }
+        
+        session_data = self.status_sessions[session_id]
+        
+        # Convert datetime objects to ISO strings for safe JSON serialization
+        def sanitize_value(v):
+            if isinstance(v, datetime):
+                return v.isoformat()
+            elif isinstance(v, list):
+                return [sanitize_value(item) for item in v]
+            elif isinstance(v, dict):
+                return {k: sanitize_value(val) for k, val in v.items()}
+            else:
+                return v
+        
+        # If including history, return the full session data
+        if include_history:
+            sanitized_data = {k: sanitize_value(v) for k, v in session_data.items()}
+            print(f"[DEBUG] Returning full status with {len(sanitized_data.get('status_history', []))} history items")
+        else:
+            # For real-time polling, return only the current status (not the overwritten main session data)
+            current_status = session_data.get("current_status", {})
+            if current_status:
+                # Use current_status which has the latest update
+                sanitized_data = sanitize_value(current_status)
+                # Add essential session metadata
+                sanitized_data["session_id"] = session_id
+                sanitized_data["active"] = session_data.get("active", True)
+                sanitized_data["completed"] = session_data.get("completed", False)
+                print(f"[DEBUG] Returning current status: {sanitized_data.get('type', 'unknown')}")
+            else:
+                # Fallback to main session data if current_status is empty
+                sanitized_data = {k: sanitize_value(v) for k, v in session_data.items()}
+                if "status_history" in sanitized_data:
+                    sanitized_data.pop("status_history")
+                print(f"[DEBUG] Fallback: returning main session data")
+        
+        print(f"[DEBUG] Final sanitized_data keys: {list(sanitized_data.keys())}")
+        
+        # Mark completion timestamp for cleanup later
+        if session_data.get("completed", False) and "completion_timestamp" not in session_data:
+            session_data["completion_timestamp"] = datetime.now()
+            print(f"[DEBUG] Session {session_id} marked for cleanup in 30 seconds")
+        
+        return sanitized_data
+    
+    def _cleanup_old_sessions(self):
+        """Clean up completed sessions older than 60 seconds"""
+        current_time = datetime.now()
+        sessions_to_remove = []
+        
+        for session_id, session_data in self.status_sessions.items():
+            if (session_data.get("completed", False) and 
+                "completion_timestamp" in session_data and
+                (current_time - session_data["completion_timestamp"]).total_seconds() > 300):
+                sessions_to_remove.append(session_id)
+        
+        for session_id in sessions_to_remove:
+            print(f"[DEBUG] Cleaning up old completed session: {session_id}")
+            del self.status_sessions[session_id]
     
     def close_status_session(self, session_id: str):
-        """Close a status tracking session"""
+        """Close and clean up a status tracking session"""
         if session_id in self.status_sessions:
-            self.status_sessions[session_id]["active"] = False
+            print(f"[DEBUG] Closing and cleaning up session {session_id}")
+            del self.status_sessions[session_id]

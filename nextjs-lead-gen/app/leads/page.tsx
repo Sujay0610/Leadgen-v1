@@ -431,7 +431,14 @@ export default function LeadsPage() {
                       onChange={(e) => setFilters(prev => ({ ...prev, sortOrder: 'desc' }))}
                       className="text-primary-600 focus:ring-primary-500"
                     />
-                    <span className="text-sm text-gray-700">Newest First</span>
+                    <span className="text-sm text-gray-700">
+                      {filters.sortBy === 'full_name' || filters.sortBy === 'company_name' 
+                        ? 'Z-A' 
+                        : filters.sortBy === 'icp_percentage' 
+                        ? 'Most to Least' 
+                        : 'Newest First'
+                      }
+                    </span>
                   </label>
                   <label className="flex items-center space-x-2">
                     <input
@@ -442,7 +449,14 @@ export default function LeadsPage() {
                       onChange={(e) => setFilters(prev => ({ ...prev, sortOrder: 'asc' }))}
                       className="text-primary-600 focus:ring-primary-500"
                     />
-                    <span className="text-sm text-gray-700">Oldest First</span>
+                    <span className="text-sm text-gray-700">
+                      {filters.sortBy === 'full_name' || filters.sortBy === 'company_name' 
+                        ? 'A-Z' 
+                        : filters.sortBy === 'icp_percentage' 
+                        ? 'Least to Most' 
+                        : 'Oldest First'
+                      }
+                    </span>
                   </label>
                 </div>
               </div>

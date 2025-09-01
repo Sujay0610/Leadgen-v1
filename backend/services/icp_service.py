@@ -4,6 +4,9 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from supabase import create_client
 from openai import OpenAI
+from langchain_openai import ChatOpenAI
+from langchain.schema import HumanMessage
+import re
 from config import get_settings
 
 class ICPService:
@@ -21,11 +24,15 @@ class ICPService:
             self.openai_client = OpenAI(
                 api_key=self.settings.OPENAI_API_KEY
             )
+            self.llm = ChatOpenAI(
+                model="gpt-5-nano-2025-08-07",
+                api_key=self.settings.OPENAI_API_KEY
+            )
     
-    async def get_icp_configurations(self) -> Dict[str, Any]:
-        """Get all ICP configurations"""
+    async def get_icp_configurations(self, user_id: str) -> Dict[str, Any]:
+        """Get all ICP configurations for a specific user"""
         try:
-            result = self.supabase.table("icp_configurations").select("*").order("created_at", ascending=False).execute()
+            result = self.supabase.table("icp_settings").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
             
             return {
                 "status": "success",
@@ -38,11 +45,12 @@ class ICPService:
                 "message": f"Error fetching ICP configurations: {str(e)}"
             }
     
-    async def create_icp_configuration(self, config_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create new ICP configuration"""
+    async def create_icp_configuration(self, user_id: str, config_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create new ICP configuration for a specific user"""
         try:
             config = {
                 "id": str(uuid.uuid4()),
+                "user_id": user_id,
                 "name": config_data.get("name"),
                 "description": config_data.get("description", ""),
                 "criteria": config_data.get("criteria", {}),
@@ -63,7 +71,7 @@ class ICPService:
                 "updated_at": datetime.now().isoformat()
             }
             
-            result = self.supabase.table("icp_configurations").insert(config).execute()
+            result = self.supabase.table("icp_settings").insert(config).execute()
             
             return {
                 "status": "success",
@@ -77,12 +85,12 @@ class ICPService:
                 "message": f"Error creating ICP configuration: {str(e)}"
             }
     
-    async def update_icp_configuration(self, config_id: str, config_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update ICP configuration"""
+    async def update_icp_configuration(self, user_id: str, config_id: str, config_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Update ICP configuration for a specific user"""
         try:
             config_data["updated_at"] = datetime.now().isoformat()
             
-            result = self.supabase.table("icp_configurations").update(config_data).eq("id", config_id).execute()
+            result = self.supabase.table("icp_settings").update(config_data).eq("id", config_id).eq("user_id", user_id).execute()
             
             return {
                 "status": "success",
@@ -95,10 +103,10 @@ class ICPService:
                 "message": f"Error updating ICP configuration: {str(e)}"
             }
     
-    async def delete_icp_configuration(self, config_id: str) -> Dict[str, Any]:
-        """Delete ICP configuration"""
+    async def delete_icp_configuration(self, user_id: str, config_id: str) -> Dict[str, Any]:
+        """Delete ICP configuration for a specific user"""
         try:
-            result = self.supabase.table("icp_configurations").delete().eq("id", config_id).execute()
+            result = self.supabase.table("icp_settings").delete().eq("id", config_id).eq("user_id", user_id).execute()
             
             return {
                 "status": "success",
@@ -116,7 +124,7 @@ class ICPService:
         try:
             # Get ICP configuration
             if config_id:
-                config_result = self.supabase.table("icp_configurations").select("*").eq("id", config_id).execute()
+                config_result = self.supabase.table("icp_settings").select("*").eq("id", config_id).execute()
                 if not config_result.data:
                     return {
                         "status": "error",
@@ -125,16 +133,39 @@ class ICPService:
                 config = config_result.data[0]
             else:
                 # Use default active configuration
-                config_result = self.supabase.table("icp_configurations").select("*").eq("is_active", True).limit(1).execute()
+                config_result = self.supabase.table("icp_settings").select("*").limit(1).execute()
                 if not config_result.data:
-                    return {
-                        "status": "error",
-                        "message": "No active ICP configuration found"
+                    # Use hardcoded default configuration
+                    config = {
+                        "target_industries": ["Manufacturing", "Industrial", "Automotive", "Technology", "Healthcare"],
+                        "target_roles": ["Operations Manager", "Facility Manager", "Maintenance Manager", "Plant Manager", "Production Manager", "COO", "VP Operations"],
+                        "company_size_ranges": ["51-200", "201-500", "501-1000", "1001-5000"],
+                        "custom_prompt": "You are an expert lead qualification analyst. Analyze the LinkedIn profile and score based on industry fit, role relevance, company size, and decision-making authority.",
+                        "weights": {
+                            "industry_fit": 30,
+                            "role_fit": 30,
+                            "company_size_fit": 20,
+                            "decision_maker": 20
+                        }
                     }
-                config = config_result.data[0]
+                else:
+                    raw_config = config_result.data[0]
+                    # Convert to expected format
+                    config = {
+                        "target_industries": raw_config.get("target_industries", ["Manufacturing", "Industrial", "Automotive"]),
+                        "target_roles": raw_config.get("target_job_titles", ["Operations Manager", "Facility Manager", "Maintenance Manager"]),
+                        "company_size_ranges": raw_config.get("target_company_sizes", ["51-200", "201-500", "501-1000"]),
+                        "custom_prompt": raw_config.get("custom_prompt", ""),
+                        "weights": raw_config.get("weights", {
+                            "industry_fit": 30,
+                            "role_fit": 30,
+                            "company_size_fit": 20,
+                            "decision_maker": 20
+                        })
+                    }
             
-            # Calculate scores
-            scores = self._calculate_icp_scores(lead_data, config)
+            # Calculate individual scores using AI
+            scores = await self._calculate_icp_scores_ai(lead_data, config)
             
             # Calculate weighted total score
             weights = config.get("weights", {})
@@ -182,6 +213,141 @@ class ICPService:
             return {
                 "status": "error",
                 "message": f"Error scoring lead: {str(e)}"
+            }
+    
+    def clean_ai_json_response(self, response_text: str) -> str:
+        """Clean AI response to extract valid JSON"""
+        if not response_text:
+            return "{}"
+        
+        # Remove leading/trailing whitespace and newlines
+        cleaned = response_text.strip()
+        
+        # Remove markdown code blocks if present
+        if cleaned.startswith('```json'):
+            cleaned = cleaned[7:]
+        elif cleaned.startswith('```'):
+            cleaned = cleaned[3:]
+        
+        if cleaned.endswith('```'):
+            cleaned = cleaned[:-3]
+        
+        # Remove extra quotes if the entire response is wrapped in quotes
+        if cleaned.startswith('"') and cleaned.endswith('"') and cleaned.count('"') == 2:
+            cleaned = cleaned[1:-1]
+        
+        # Handle cases where response starts with newline followed by quote
+        if cleaned.startswith('\n"') and cleaned.endswith('"'):
+            cleaned = cleaned[2:-1]
+        
+        return cleaned.strip()
+    
+    async def _calculate_icp_scores_ai(self, lead_data: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, float]:
+        """Calculate ICP scores using AI analysis"""
+        try:
+            # Prepare profile data for AI analysis
+            profile_summary = {
+                "name": lead_data.get("fullName", "Unknown"),
+                "job_title": lead_data.get("jobTitle", "Unknown"),
+                "company": lead_data.get("companyName", "Unknown"),
+                "industry": lead_data.get("companyIndustry", "Unknown"),
+                "company_size": lead_data.get("companySize", "Unknown"),
+                "location": lead_data.get("location", "Unknown"),
+                "headline": lead_data.get("headline", "Unknown"),
+                "summary": lead_data.get("summary", "Unknown")
+            }
+            
+            # Get ICP criteria from config
+            target_industries = config.get("target_industries", [])
+            target_roles = config.get("target_roles", [])
+            target_company_sizes = config.get("company_size_ranges", [])
+            custom_prompt = config.get("custom_prompt", "")
+            
+            # Create AI prompt
+            prompt = f"""
+Analyze this LinkedIn profile against the Ideal Customer Profile (ICP) criteria and provide scores from 1-10 for each category.
+
+Profile to analyze:
+- Name: {profile_summary['name']}
+- Job Title: {profile_summary['job_title']}
+- Company: {profile_summary['company']}
+- Industry: {profile_summary['industry']}
+- Company Size: {profile_summary['company_size']}
+- Location: {profile_summary['location']}
+- Headline: {profile_summary['headline']}
+- Summary: {profile_summary['summary']}
+
+ICP Criteria:
+- Target Industries: {', '.join(target_industries) if target_industries else 'Any'}
+- Target Roles: {', '.join(target_roles) if target_roles else 'Any'}
+- Target Company Sizes: {', '.join(target_company_sizes) if target_company_sizes else 'Any'}
+
+{custom_prompt if custom_prompt else ''}
+
+Provide scores (1-10) for:
+1. industry_fit: How well does the company industry match target industries?
+2. role_fit: How well does the job title/role match target roles?
+3. company_size_fit: How well does the company size match target ranges?
+4. decision_maker: How likely is this person to be a decision maker based on their title and seniority?
+
+Respond with ONLY a JSON object in this exact format:
+{{
+    "industry_fit": <score>,
+    "role_fit": <score>,
+    "company_size_fit": <score>,
+    "decision_maker": <score>
+}}
+"""
+            
+            # Call OpenAI API
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an expert at analyzing LinkedIn profiles for sales qualification. Always respond with valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=500
+            )
+            
+            # Extract and clean the response
+            ai_response = response.choices[0].message.content
+            cleaned_response = self.clean_ai_json_response(ai_response)
+            
+            # Parse JSON response
+            try:
+                scores = json.loads(cleaned_response)
+                
+                # Validate and ensure all required fields are present
+                required_fields = ["industry_fit", "role_fit", "company_size_fit", "decision_maker"]
+                for field in required_fields:
+                    if field not in scores:
+                        scores[field] = 5.0  # Default score
+                    else:
+                        # Ensure score is within valid range
+                        scores[field] = max(1.0, min(10.0, float(scores[field])))
+                
+                return scores
+                
+            except json.JSONDecodeError as e:
+                print(f"JSON decode error in AI ICP scoring: {e}")
+                print(f"Cleaned response: {cleaned_response}")
+                # Return default scores on JSON error
+                return {
+                    "industry_fit": 5.0,
+                    "role_fit": 5.0,
+                    "company_size_fit": 5.0,
+                    "decision_maker": 5.0
+                }
+                
+        except Exception as e:
+            print(f"Error in AI ICP scoring: {e}")
+            # Return default scores on any error
+            return {
+                "industry_fit": 5.0,
+                "role_fit": 5.0,
+                "company_size_fit": 5.0,
+                "decision_maker": 5.0
             }
     
     def _calculate_icp_scores(self, lead_data: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, float]:
@@ -413,8 +579,8 @@ class ICPService:
                 "message": f"Error bulk scoring leads: {str(e)}"
             }
     
-    async def get_icp_analytics(self, config_id: str = None, time_range: str = "30d") -> Dict[str, Any]:
-        """Get ICP analytics and insights"""
+    async def get_icp_analytics(self, user_id: str, config_id: str = None, time_range: str = "30d") -> Dict[str, Any]:
+        """Get ICP analytics and insights for a specific user"""
         try:
             # Calculate date range
             now = datetime.now()
@@ -427,8 +593,8 @@ class ICPService:
             else:
                 start_date = now - timedelta(days=30)
             
-            # Get leads with ICP scores
-            leads_result = self.supabase.table("leads").select("*").gte("created_at", start_date.isoformat()).execute()
+            # Get leads with ICP scores for the specific user
+            leads_result = self.supabase.table("leads").select("*").eq("user_id", user_id).gte("created_at", start_date.isoformat()).execute()
             leads = leads_result.data or []
             
             # Calculate analytics
@@ -494,11 +660,11 @@ class ICPService:
                 "message": f"Error fetching ICP analytics: {str(e)}"
             }
     
-    async def get_config(self) -> Dict[str, Any]:
-        """Get ICP configuration settings"""
+    async def get_config(self, user_id: str) -> Dict[str, Any]:
+        """Get ICP configuration settings for a specific user"""
         try:
-            # Get the first active configuration or return default
-            result = self.supabase.table("icp_configurations").select("*").eq("is_active", True).limit(1).execute()
+            # Get the first active configuration for the user or return default
+            result = self.supabase.table("icp_configurations").select("*").eq("user_id", user_id).eq("is_active", True).limit(1).execute()
             
             if result.data:
                 config = result.data[0]
@@ -554,8 +720,8 @@ class ICPService:
                 "message": f"Error fetching ICP config: {str(e)}"
             }
     
-    async def update_config(self, request_data) -> Dict[str, Any]:
-        """Update ICP configuration settings"""
+    async def update_config(self, user_id: str, request_data) -> Dict[str, Any]:
+        """Update ICP configuration settings for a specific user"""
         try:
             # Extract data from request
             config_data = {
@@ -570,13 +736,13 @@ class ICPService:
                 "updated_at": datetime.now().isoformat()
             }
             
-            # Check if configuration exists
-            result = self.supabase.table("icp_configurations").select("id").eq("is_active", True).limit(1).execute()
+            # Check if configuration exists for the user
+            result = self.supabase.table("icp_settings").select("id").eq("user_id", user_id).limit(1).execute()
             
             if result.data:
                 # Update existing configuration
                 config_id = result.data[0]['id']
-                update_result = self.supabase.table("icp_configurations").update(config_data).eq("id", config_id).execute()
+                update_result = self.supabase.table("icp_settings").update(config_data).eq("id", config_id).eq("user_id", user_id).execute()
                 
                 return {
                     "status": "success",
@@ -587,12 +753,13 @@ class ICPService:
                 # Create new configuration
                 config_data.update({
                     "id": str(uuid.uuid4()),
+                    "user_id": user_id,
                     "name": "Default ICP Configuration",
                     "is_active": True,
                     "created_at": datetime.now().isoformat()
                 })
                 
-                create_result = self.supabase.table("icp_configurations").insert(config_data).execute()
+                create_result = self.supabase.table("icp_settings").insert(config_data).execute()
                 
                 return {
                     "status": "success",

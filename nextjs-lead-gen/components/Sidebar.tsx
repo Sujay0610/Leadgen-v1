@@ -12,10 +12,12 @@ import {
   Settings, 
   ChevronLeft,
   ChevronRight,
-  User
+  User,
+  LogOut
 } from 'lucide-react'
 import { clsx } from 'clsx'
-import toast from 'react-hot-toast'
+import { toast } from 'react-hot-toast'
+import { useAuth } from '@/contexts/AuthContext'
 
 const navigation = [
   {
@@ -53,6 +55,12 @@ const navigation = [
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
   const pathname = usePathname()
+  const { user, signOut } = useAuth()
+
+  const handleSignOut = async () => {
+    await signOut()
+    toast.success('Signed out successfully')
+  }
 
 
   return (
@@ -133,19 +141,44 @@ export default function Sidebar() {
       </nav>
 
       {/* User Section */}
-      <div className="p-6 border-t border-primary-200/30">
+      <div className="p-6 border-t border-primary-200/30 space-y-3">
         {!collapsed && (
-          <div className="flex items-center gap-4 px-4 py-3 bg-gradient-to-r from-primary-50 to-accent-50 rounded-2xl border border-primary-200/50 shadow-sm">
-            <div className="h-10 w-10 bg-gradient-to-br from-brand-500 to-brand-600 rounded-xl flex items-center justify-center shadow-md">
-              <User className="h-5 w-5 text-white" />
+          <>
+            <div className="flex items-center gap-4 px-4 py-3 bg-gradient-to-r from-primary-50 to-accent-50 rounded-2xl border border-primary-200/50 shadow-sm">
+              <div className="h-10 w-10 bg-gradient-to-br from-brand-500 to-brand-600 rounded-xl flex items-center justify-center shadow-md">
+                <User className="h-5 w-5 text-white" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-primary-900 truncate">
+                  {user?.user_metadata?.full_name || user?.email || 'User'}
+                </p>
+                <p className="text-xs text-brand-600 font-medium truncate">
+                  {user?.email}
+                </p>
+              </div>
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-primary-900 truncate">
-                Lead Gen User
-              </p>
-              <p className="text-xs text-brand-600 font-medium">● Active</p>
-            </div>
-          </div>
+            <button
+              onClick={handleSignOut}
+              className="w-full flex items-center gap-4 px-4 py-3 rounded-2xl transition-all duration-300 group text-red-600 hover:bg-red-50 hover:text-red-700 hover:shadow-md hover:scale-105"
+            >
+              <div className="p-2 rounded-xl bg-red-100/50 group-hover:bg-red-200/80 group-hover:shadow-md transition-all duration-300">
+                <LogOut className="h-5 w-5 flex-shrink-0" />
+              </div>
+              <div className="flex-1 min-w-0 text-left">
+                <div className="font-semibold text-sm">Sign Out</div>
+                <div className="text-xs opacity-75">End your session</div>
+              </div>
+            </button>
+          </>
+        )}
+        {collapsed && (
+          <button
+            onClick={handleSignOut}
+            className="w-full p-3 rounded-xl transition-all duration-300 text-red-600 hover:bg-red-50 hover:text-red-700 hover:shadow-md flex items-center justify-center"
+            title="Sign Out"
+          >
+            <LogOut className="h-5 w-5" />
+          </button>
         )}
       </div>
     </div>

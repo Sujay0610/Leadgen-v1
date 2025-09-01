@@ -105,6 +105,19 @@ class ApiClient {
     });
   }
 
+  async getLeadGenerationStatus(sessionId: string) {
+    return this.client.get('/api/generate-leads/status', {
+      params: { session_id: sessionId },
+      timeout: 120000 // 2 minutes timeout for status polling
+    });
+  }
+
+  // Get authentication token for SSE connections
+  async getAuthToken(): Promise<string | null> {
+    const { data: { session } } = await this.supabase.auth.getSession();
+    return session?.access_token || null;
+  }
+
   async getLeads(params: {
     page?: number;
     limit?: number;
@@ -149,6 +162,9 @@ class ApiClient {
     emailType?: string;
     tone?: string;
     customContext?: string;
+    templateId?: string;
+    leadData?: Record<string, any>;
+    stage?: string;
   }) {
     return this.client.post('/api/email/generate', data);
   }
@@ -159,6 +175,7 @@ class ApiClient {
     body: string;
     leadId?: string;
     from?: string;
+    metadata?: Record<string, any>;
   }) {
     return this.client.post('/api/email/send', data);
   }
@@ -172,14 +189,31 @@ class ApiClient {
     name: string;
     subject: string;
     body: string;
+    persona?: string;
+    stage?: string;
     type?: string;
     variables?: string[];
+    isActive?: boolean;
   }) {
-    return this.client.post('/api/email/templates', data);
+    const response = await this.client.post('/api/email/templates', {
+      action: 'create',
+      name: data.name,
+      subject: data.subject,
+      body: data.body,
+      persona: data.persona,
+      stage: data.stage
+    });
+    return response.data;
   }
 
   async updateEmailTemplate(templateId: string, data: Record<string, any>) {
-    return this.client.post('/api/email/templates', { action: 'update', id: templateId, ...data });
+    const response = await this.client.put(`/api/email/templates/${templateId}`, {
+      subject: data.subject,
+      body: data.body,
+      persona: data.persona,
+      stage: data.stage
+    });
+    return response.data;
   }
 
   async deleteEmailTemplate(templateId: string) {
@@ -233,6 +267,16 @@ class ApiClient {
     return response.data;
   }
 
+  async updateCampaign(campaignId: string, data: Record<string, any>) {
+    const response = await this.client.put('/api/email/campaigns', { id: campaignId, ...data });
+    return response.data;
+  }
+
+  async deleteCampaign(campaignId: string) {
+    const response = await this.client.delete(`/api/email/campaigns/${campaignId}`);
+    return response.data;
+  }
+
   async getEmailMetrics(timeRange: string = '30d') {
     return this.client.get('/api/email/dashboard', { params: { timeRange } });
   }
@@ -243,7 +287,11 @@ class ApiClient {
 
   // ICP endpoints
   async getICPSettings() {
-    return this.client.get('/api/icp/config');
+    const response = await this.client.get('/api/icp/config');
+    return {
+      status: response.data.status,
+      data: response.data.data
+    };
   }
 
   async updateICPSettings(data: Record<string, any>) {
@@ -251,7 +299,79 @@ class ApiClient {
   }
 
   async getICPStats() {
-    return this.client.get('/api/icp/config?action=stats');
+    const response = await this.client.get('/api/icp/config');
+    return {
+      status: response.data.status,
+      data: response.data.statistics
+    };
+  }
+
+  async generateICPPrompt(data: {
+    targetIndustries?: string[];
+    targetJobTitles?: string[];
+    targetCompanySizes?: string[];
+    targetLocations?: string[];
+    scoringCriteria?: Array<{name: string; weight: number}>;
+    customRequirements?: string;
+  }) {
+    return this.client.post('/api/icp/generate-prompt', data);
+  }
+
+  // New ICP prompt endpoints
+  async getICPPrompt() {
+    try {
+      const response = await this.client.get('/api/icp/prompt');
+      // Normalize backend response. Some backends return:
+      // { prompt: { status: 'success', data: { prompt: string, default_values: {...} } }, default_values: {...} }
+      // We want to always return: { status: 'success', data: { prompt: string, default_values: {...} } }
+      const raw = response.data as any;
+      let prompt: string = '';
+      let default_values: Record<string, any> | undefined = undefined;
+
+      if (raw) {
+        if (raw.prompt && typeof raw.prompt === 'object') {
+          // Unwrap nested object
+          const inner = raw.prompt.data || raw.prompt;
+          prompt = inner.prompt || '';
+          default_values = raw.default_values || inner.default_values || undefined;
+        } else {
+          prompt = raw.prompt || '';
+          default_values = raw.default_values || undefined;
+        }
+      }
+
+      return {
+        status: 'success' as const,
+        data: { prompt, default_values },
+        message: 'ICP prompt retrieved successfully'
+      };
+    } catch (error: any) {
+      console.error('Error getting ICP prompt:', error);
+      return {
+        status: 'error' as const,
+        message: error.response?.data?.message || error.message || 'Failed to get ICP prompt'
+      };
+    }
+  }
+
+  async updateICPPrompt(data: {
+    prompt: string;
+    default_values?: Record<string, string>;
+  }) {
+    try {
+      const response = await this.client.post('/api/icp/prompt', data);
+      return {
+        status: 'success',
+        data: response.data,
+        message: 'ICP prompt updated successfully'
+      };
+    } catch (error: any) {
+      console.error('Error updating ICP prompt:', error);
+      return {
+        status: 'error',
+        message: error.response?.data?.message || error.message || 'Failed to update ICP prompt'
+      };
+    }
   }
 
   // Legacy ICP endpoints for backward compatibility

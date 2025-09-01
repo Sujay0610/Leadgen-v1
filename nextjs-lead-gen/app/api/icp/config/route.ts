@@ -95,34 +95,50 @@ Grade Scale:
 
 export async function GET(request: NextRequest) {
   try {
-    // Try to get existing configuration from database
-    const { data: config, error } = await supabase
-      .from('icp_config')
-      .select('*')
-      .single()
-
-    if (error && error.code !== 'PGRST116') { // PGRST116 is "not found" error
-      console.error('Error fetching ICP config:', error)
+    // Get user from JWT token
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return NextResponse.json(
-        { status: 'error', message: 'Failed to fetch ICP configuration' },
-        { status: 500 }
+        { status: 'error', message: 'Authentication required' },
+        { status: 401 }
       )
     }
 
-    // If no config exists, return default configuration
-    const icpConfig = config ? {
-      scoringCriteria: config.scoringCriteria || DEFAULT_ICP_CONFIG.scoringCriteria,
-      targetingRules: config.targetingRules || DEFAULT_ICP_CONFIG.targetingRules,
-      customPrompt: config.customPrompt || DEFAULT_ICP_CONFIG.customPrompt,
-      updatedAt: config.updatedAt
-    } : DEFAULT_ICP_CONFIG
+    const token = authHeader.substring(7)
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { status: 'error', message: 'Invalid authentication token' },
+        { status: 401 }
+      )
+    }
 
+    const userId = user.id
+    
     // Get statistics
-    const stats = await getICPStatistics()
+    const stats = await getICPStatistics(userId)
 
     return NextResponse.json({
       status: 'success',
-      config: icpConfig,
+      data: {
+        targetIndustries: DEFAULT_ICP_CONFIG.targetingRules.industries,
+        targetJobTitles: DEFAULT_ICP_CONFIG.targetingRules.jobTitles,
+        targetCompanySizes: DEFAULT_ICP_CONFIG.targetingRules.companySizes,
+        targetLocations: DEFAULT_ICP_CONFIG.targetingRules.locations,
+        excludeIndustries: [],
+        excludeCompanySizes: [],
+        minEmployeeCount: 50,
+        maxEmployeeCount: 5000,
+        scoringCriteria: Object.entries(DEFAULT_ICP_CONFIG.scoringCriteria).map(([key, value]: [string, any]) => ({
+          id: key,
+          name: key.charAt(0).toUpperCase() + key.slice(1),
+          weight: value.weight,
+          description: `Score based on ${key} relevance`,
+          enabled: value.enabled
+        })),
+        customPrompt: DEFAULT_ICP_CONFIG.customPrompt
+      },
       statistics: stats
     })
 
@@ -161,24 +177,47 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Check if configuration already exists
+    // Get user from JWT token
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return NextResponse.json(
+        { status: 'error', message: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    const token = authHeader.substring(7)
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { status: 'error', message: 'Invalid authentication token' },
+        { status: 401 }
+      )
+    }
+
+    const userId = user.id
+
+    // Check if configuration already exists for this user
     const { data: existingConfig } = await supabase
-      .from('icp_config')
+      .from('icp_settings')
       .select('id')
+      .eq('user_id', userId)
       .single()
 
     const configData = {
+      user_id: userId,
       scoringCriteria: scoringCriteria || DEFAULT_ICP_CONFIG.scoringCriteria,
       targetingRules: targetingRules || DEFAULT_ICP_CONFIG.targetingRules,
       customPrompt: customPrompt || DEFAULT_ICP_CONFIG.customPrompt,
-      updatedAt: new Date().toISOString()
+      updated_at: new Date().toISOString()
     }
 
     let result
     if (existingConfig) {
       // Update existing configuration
       result = await supabase
-        .from('icp_config')
+        .from('icp_settings')
         .update(configData)
         .eq('id', existingConfig.id)
         .select()
@@ -186,11 +225,11 @@ export async function POST(request: NextRequest) {
     } else {
       // Create new configuration
       result = await supabase
-          .from('icp_config')
-          .insert({
-            id: randomUUID(),
+        .from('icp_settings')
+        .insert({
+          id: randomUUID(),
           ...configData,
-          createdAt: new Date().toISOString()
+          created_at: new Date().toISOString()
         })
         .select()
         .single()
@@ -221,36 +260,59 @@ export async function POST(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
+    // Get user from JWT token
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return NextResponse.json(
+        { status: 'error', message: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    const token = authHeader.substring(7)
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { status: 'error', message: 'Invalid authentication token' },
+        { status: 401 }
+      )
+    }
+
+    const userId = user.id
+    
     const body = await request.json()
     const { action } = body
 
     if (action === 'reset') {
       // Reset to default configuration
       const { data: existingConfig } = await supabase
-        .from('icp_config')
+        .from('icp_settings')
         .select('id')
+        .eq('user_id', userId)
         .single()
 
       const configData = {
+        user_id: userId,
         ...DEFAULT_ICP_CONFIG,
-        updatedAt: new Date().toISOString()
+        updated_at: new Date().toISOString()
       }
 
       let result
       if (existingConfig) {
         result = await supabase
-          .from('icp_config')
+          .from('icp_settings')
           .update(configData)
           .eq('id', existingConfig.id)
           .select()
           .single()
       } else {
         result = await supabase
-          .from('icp_config')
+          .from('icp_settings')
           .insert({
             id: randomUUID(),
             ...configData,
-            createdAt: new Date().toISOString()
+            created_at: new Date().toISOString()
           })
           .select()
           .single()
@@ -286,13 +348,19 @@ export async function PUT(request: NextRequest) {
 }
 
 // Helper function to get ICP statistics
-async function getICPStatistics() {
+async function getICPStatistics(userId?: string) {
   try {
-    // Get all leads with ICP scores
-    const { data: leads, error } = await supabase
+    // Get all leads with ICP scores for the user
+    let query = supabase
       .from('leads')
-      .select('icpScore, icpGrade')
-      .not('icpScore', 'is', null)
+      .select('icp_score, icp_grade')
+      .not('icp_score', 'is', null)
+    
+    if (userId) {
+      query = query.eq('user_id', userId)
+    }
+    
+    const { data: leads, error } = await query
 
     if (error) {
       console.error('Error fetching leads for statistics:', error)
@@ -308,7 +376,7 @@ async function getICPStatistics() {
 
     const totalLeads = leads?.length || 0
     const averageScore = totalLeads > 0 
-      ? Math.round((leads.reduce((sum, lead) => sum + (lead.icpScore || 0), 0) / totalLeads) * 100) / 100
+      ? Math.round((leads.reduce((sum, lead) => sum + (lead.icp_score || 0), 0) / totalLeads) * 100) / 100
       : 0
 
     // Calculate grade distribution
@@ -318,7 +386,7 @@ async function getICPStatistics() {
     }
 
     leads?.forEach(lead => {
-      const grade = lead.icpGrade
+      const grade = lead.icp_grade
       if (grade && gradeDistribution.hasOwnProperty(grade)) {
         gradeDistribution[grade as keyof typeof gradeDistribution]++
       }

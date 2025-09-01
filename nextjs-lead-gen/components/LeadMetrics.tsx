@@ -7,7 +7,7 @@ import apiClient from '@/lib/api-client'
 interface MetricData {
   totalLeads: number
   emailsAvailable: number
-  averageICPScore: number
+  averageIcpScore: number
   recentLeads: number
 }
 
@@ -20,7 +20,7 @@ export default function LeadMetrics({ className = '', refreshTrigger = 0 }: Lead
   const [metrics, setMetrics] = useState<MetricData>({
     totalLeads: 0,
     emailsAvailable: 0,
-    averageICPScore: 0,
+    averageIcpScore: 0,
     recentLeads: 0
   })
   const [isLoading, setIsLoading] = useState(true)
@@ -35,32 +35,66 @@ export default function LeadMetrics({ className = '', refreshTrigger = 0 }: Lead
       setIsLoading(true)
       setError(null)
       
-      // Call the Next.js API route directly instead of the backend
-      const response = await fetch('/api/leads/metrics?timeRange=30d')
-      const data = await response.json()
+      console.log('🔄 Fetching metrics...')
       
-      if (data.status === 'success') {
-        // Handle the response structure from the Next.js API route
-        const metricsData = data.metrics
-        setMetrics({
-          totalLeads: metricsData.totalLeads || 0,
-          emailsAvailable: metricsData.leadsWithEmails || 0,
-          averageICPScore: metricsData.averageIcpScore || 0,
-          recentLeads: metricsData.recentLeads || 0
-        })
+      // Use apiClient which handles authentication properly
+      const response = await apiClient.getLeadMetrics('30d')
+      console.log('📊 Metrics API response:', response)
+      
+      const data = response.data
+      console.log('📊 Metrics data:', data)
+      
+      if (data && data.status === 'success') {
+        // Support both Next.js route shape { status, metrics, breakdowns, trends }
+        // and FastAPI shape { status, data: { overview, breakdown, trends } }
+        let metricsData: any = null
+        
+        if (data.metrics) {
+          metricsData = data.metrics
+        } else if (data.data && data.data.overview) {
+          const overview = data.data.overview
+          metricsData = {
+            totalLeads: overview.totalLeads ?? overview.total_leads ?? 0,
+            // Use emailsAvailable from backend response
+            emailsAvailable: overview.emailsAvailable ?? 0,
+            // Map average score naming from backend to frontend expectation
+            averageIcpScore: overview.averageScore ?? 0,
+            // Map recent/new leads
+            recentLeads: overview.newLeads ?? 0,
+          }
+        }
+
+        if (metricsData) {
+          console.log('✅ Setting metrics:', metricsData)
+          setMetrics({
+            totalLeads: metricsData?.totalLeads || 0,
+            emailsAvailable: metricsData?.emailsAvailable ?? 0,
+            averageIcpScore: metricsData?.averageIcpScore ?? metricsData?.averageScore ?? 0,
+            recentLeads: metricsData?.recentLeads ?? metricsData?.newLeads ?? 0
+          })
+        } else {
+          console.error('❌ API response error (unknown shape):', data)
+          setError(data?.message || 'Failed to fetch metrics')
+        }
       } else {
-        setError(data.message || 'Failed to fetch metrics')
+        console.error('❌ API response error:', data)
+        setError(data?.message || 'Failed to fetch metrics')
       }
     } catch (error) {
-      console.error('Error fetching metrics:', error)
-      setError('Failed to fetch metrics')
+      console.error('❌ Error fetching metrics:', error)
+      console.error('❌ Error details:', {
+        message: (error as any).message,
+        response: (error as any).response?.data,
+        status: (error as any).response?.status
+      })
+      setError(`Failed to fetch metrics: ${(error as any).message}`)
     } finally {
       setIsLoading(false)
     }
   }
 
   const formatPercentage = (value: number) => {
-    return `${Math.round(value || 0)}/10`
+    return `${Math.round(value || 0)}/100`
   }
 
   const getScoreColor = (score: number) => {
@@ -151,11 +185,11 @@ export default function LeadMetrics({ className = '', refreshTrigger = 0 }: Lead
             <div>
               <p className="text-sm font-medium text-gray-600">Avg ICP Score</p>
               <div className="flex items-baseline gap-2">
-                <p className={`text-2xl font-bold ${getScoreColor(metrics.averageICPScore)}`}>
-                  {formatPercentage(metrics.averageICPScore)}
+                <p className={`text-2xl font-bold ${getScoreColor(metrics.averageIcpScore)}`}>
+                  {formatPercentage(metrics.averageIcpScore)}
                 </p>
-                <span className={`text-sm font-medium ${getScoreColor(metrics.averageICPScore)}`}>
-                  ({getScoreGrade(metrics.averageICPScore)})
+                <span className={`text-sm font-medium ${getScoreColor(metrics.averageIcpScore)}`}>
+                  ({getScoreGrade(metrics.averageIcpScore)})
                 </span>
               </div>
             </div>

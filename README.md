@@ -31,7 +31,7 @@ leadgensupa/
 - **LinkedIn Profile Scraping** via Apify
 - **Apollo.io Integration** for contact enrichment
 - **Google Search** for additional lead discovery
-- **AI-Powered ICP Scoring** using OpenAI GPT-4
+- **AI-Powered ICP Scoring** using OpenAI GPT-5-nano-2025-08-07
 
 ### Email Automation
 - **Template Management** with vector similarity search
@@ -130,7 +130,7 @@ Once the backend is running, visit:
 - **Backend**: FastAPI with async/await patterns
 - **Frontend**: Next.js 14 with App Router
 - **Database**: Supabase (PostgreSQL + Auth + Storage)
-- **AI/ML**: OpenAI GPT-4 for scoring and email generation
+- **AI/ML**: OpenAI GPT-5-nano-2025-08-07 for scoring and email generation
 - **Email**: Resend for transactional emails
 - **Deployment**: Vercel (frontend) + Railway/Render (backend)
 

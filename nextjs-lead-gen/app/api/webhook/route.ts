@@ -209,7 +209,7 @@ async function handleEmailComplained(data: any) {
       // Update lead email status to complained
       await supabase
         .from('leads')
-        .update({ emailStatus: 'complained' })
+        .update({ email_status: 'complained' })
         .eq('id', lead.id)
 
       console.log(`Email complained event recorded for lead ${lead.id}`)
@@ -247,7 +247,7 @@ async function handleEmailBounced(data: any) {
       // Update lead email status to bounced
       await supabase
         .from('leads')
-        .update({ emailStatus: 'bounced' })
+        .update({ email_status: 'bounced' })
         .eq('id', lead.id)
 
       console.log(`Email bounced event recorded for lead ${lead.id}`)
@@ -285,14 +285,14 @@ async function handleEmailOpened(data: any) {
       // Update lead email status to opened if not already replied
       const { data: currentLead } = await supabase
         .from('leads')
-        .select('emailStatus')
+        .select('email_status')
         .eq('id', lead.id)
         .single()
 
-      if (currentLead && currentLead.emailStatus !== 'replied') {
+      if (currentLead && currentLead.email_status !== 'replied') {
         await supabase
           .from('leads')
-          .update({ emailStatus: 'opened' })
+          .update({ email_status: 'opened' })
           .eq('id', lead.id)
       }
 
@@ -332,14 +332,14 @@ async function handleEmailClicked(data: any) {
       // Update lead email status to clicked if not already replied
       const { data: currentLead } = await supabase
         .from('leads')
-        .select('emailStatus')
+        .select('email_status')
         .eq('id', lead.id)
         .single()
 
-      if (currentLead && currentLead.emailStatus !== 'replied') {
+      if (currentLead && currentLead.email_status !== 'replied') {
         await supabase
           .from('leads')
-          .update({ emailStatus: 'clicked' })
+          .update({ email_status: 'clicked' })
           .eq('id', lead.id)
       }
 

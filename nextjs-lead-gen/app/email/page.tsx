@@ -22,6 +22,33 @@ import {
 import { toast } from 'react-hot-toast'
 import apiClient from '@/lib/api-client'
 
+// Helper function to calculate recommended email interval
+const calculateRecommendedInterval = (dailyLimit: number, startTime: string, endTime: string, selectedLeadsCount: number = 0): number => {
+  if (!dailyLimit || dailyLimit <= 0) return 10
+  
+  // Parse time strings to get hours
+  const [startHour, startMin] = startTime.split(':').map(Number)
+  const [endHour, endMin] = endTime.split(':').map(Number)
+  
+  // Calculate total minutes in the sending window
+  let totalMinutes = (endHour * 60 + endMin) - (startHour * 60 + startMin)
+  
+  // Handle case where end time is next day (e.g., 22:00 to 08:00)
+  if (totalMinutes <= 0) {
+    totalMinutes = (24 * 60) + totalMinutes
+  }
+  
+  // Use the smaller value between daily limit and selected leads count
+  // If selected leads is less than daily limit, space them out properly
+  const effectiveLimit = selectedLeadsCount > 0 ? Math.min(dailyLimit, selectedLeadsCount) : dailyLimit
+  
+  // Calculate interval to evenly space emails
+  const recommendedInterval = Math.floor(totalMinutes / effectiveLimit)
+  
+  // Ensure minimum interval of 1 minute and maximum of 1440 minutes (24 hours)
+  return Math.max(1, Math.min(1440, recommendedInterval))
+}
+
 interface EmailTemplate {
   id: string
   subject: string
@@ -58,7 +85,7 @@ interface EmailCampaign {
   scheduledCount: number
   openRate: number
   replyRate: number
-  emailInterval: number // hours between emails
+  emailInterval: number // minutes between emails
   dailyLimit: number
   sendTimeStart: string // e.g., "07:00"
   sendTimeEnd: string // e.g., "09:00"
@@ -89,11 +116,22 @@ export default function EmailManagementPage() {
   const [filterStage, setFilterStage] = useState('')
   const [selectedLeads, setSelectedLeads] = useState<string[]>([])
   const [showCreateCampaign, setShowCreateCampaign] = useState(false)
+  const [showCreateTemplate, setShowCreateTemplate] = useState(false)
+  const [showEditTemplate, setShowEditTemplate] = useState(false)
+  const [editingTemplate, setEditingTemplate] = useState<EmailTemplate | null>(null)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deletingCampaignId, setDeletingCampaignId] = useState<string | null>(null)
+  const [templateForm, setTemplateForm] = useState({
+    subject: '',
+    body: '',
+    persona: '',
+    stage: ''
+  })
   const [campaignForm, setCampaignForm] = useState<CampaignFormData>({
     name: '',
     templateId: '',
     selectedLeads: [],
-    emailInterval: 24, // 24 hours default
+    emailInterval: 10, // 10 minutes default
     dailyLimit: 50,
     sendTimeStart: '07:00',
     sendTimeEnd: '09:00',
@@ -151,6 +189,77 @@ export default function EmailManagementPage() {
     }
   }
 
+  const handleCreateTemplate = async () => {
+    if (!templateForm.subject || !templateForm.body || !templateForm.persona || !templateForm.stage) {
+      toast.error('Please fill in all required fields')
+      return
+    }
+
+    try {
+      const data = await apiClient.createEmailTemplate({
+        name: templateForm.subject,
+        subject: templateForm.subject,
+        body: templateForm.body,
+        persona: templateForm.persona,
+        stage: templateForm.stage,
+        type: `${templateForm.persona}_${templateForm.stage}`,
+        variables: []
+      })
+      
+      if (data.status === 'success') {
+        toast.success('Template created successfully')
+        setTemplateForm({ subject: '', body: '', persona: '', stage: '' })
+        setShowCreateTemplate(false)
+        fetchData()
+      } else {
+        toast.error(data.message || 'Failed to create template')
+      }
+    } catch (error) {
+      console.error('Error creating template:', error)
+      toast.error('Error creating template')
+    }
+  }
+
+  const handleEditTemplate = (template: EmailTemplate) => {
+    setEditingTemplate(template)
+    setTemplateForm({
+      subject: template.subject,
+      body: template.body,
+      persona: template.persona,
+      stage: template.stage
+    })
+    setShowEditTemplate(true)
+  }
+
+  const handleUpdateTemplate = async () => {
+    if (!editingTemplate || !templateForm.subject || !templateForm.body || !templateForm.persona || !templateForm.stage) {
+      toast.error('Please fill in all required fields')
+      return
+    }
+
+    try {
+      const data = await apiClient.updateEmailTemplate(editingTemplate.id, {
+        subject: templateForm.subject,
+        body: templateForm.body,
+        persona: templateForm.persona,
+        stage: templateForm.stage
+      })
+      
+      if (data.status === 'success') {
+        toast.success('Template updated successfully')
+        setTemplateForm({ subject: '', body: '', persona: '', stage: '' })
+        setShowEditTemplate(false)
+        setEditingTemplate(null)
+        fetchData()
+      } else {
+        toast.error(data.message || 'Failed to update template')
+      }
+    } catch (error) {
+      console.error('Error updating template:', error)
+      toast.error('Error updating template')
+    }
+  }
+
   const handleLeadSelection = (leadId: string) => {
     setSelectedLeads(prev => 
       prev.includes(leadId) 
@@ -189,7 +298,7 @@ export default function EmailManagementPage() {
           name: '',
           templateId: '',
           selectedLeads: [],
-          emailInterval: 24,
+          emailInterval: 10,
           dailyLimit: 50,
           sendTimeStart: '07:00',
           sendTimeEnd: '09:00',
@@ -219,6 +328,33 @@ export default function EmailManagementPage() {
       toast.error(`Error ${action}ing campaign`)
     }
   }
+
+  const handleDeleteCampaign = async () => {
+    if (!deletingCampaignId) return
+    
+    try {
+      const response = await apiClient.deleteCampaign(deletingCampaignId)
+      if (response.status === 'success') {
+        toast.success('Campaign deleted successfully')
+        fetchData()
+      } else {
+        toast.error(response.message || 'Failed to delete campaign')
+      }
+    } catch (error) {
+      console.error('Error deleting campaign:', error)
+      toast.error('Error deleting campaign')
+    } finally {
+      setShowDeleteConfirm(false)
+      setDeletingCampaignId(null)
+    }
+  }
+
+  const confirmDeleteCampaign = (campaignId: string) => {
+    setDeletingCampaignId(campaignId)
+    setShowDeleteConfirm(true)
+  }
+
+
 
   const filteredTemplates = templates.filter(template => {
     const matchesSearch = template.subject.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -330,9 +466,213 @@ export default function EmailManagementPage() {
                 <option value="follow_up">Follow Up</option>
                 <option value="meeting_request">Meeting Request</option>
               </select>
+              
+              <button
+                onClick={() => setShowCreateTemplate(true)}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2"
+              >
+                <Plus className="h-4 w-4" />
+                Create Template
+              </button>
             </>
           )}
         </div>
+
+        {/* Create Template Modal */}
+        {showCreateTemplate && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold text-gray-900">Create Email Template</h2>
+                <button
+                  onClick={() => setShowCreateTemplate(false)}
+                  className="text-gray-400 hover:text-gray-600 text-2xl"
+                >
+                  ×
+                </button>
+              </div>
+              
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Persona *
+                    </label>
+                    <input
+                      type="text"
+                      value={templateForm.persona}
+                      onChange={(e) => setTemplateForm(prev => ({ ...prev, persona: e.target.value }))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="Enter target persona (e.g., Operations Manager, CEO, etc.)"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Stage *
+                    </label>
+                    <select
+                      value={templateForm.stage}
+                      onChange={(e) => setTemplateForm(prev => ({ ...prev, stage: e.target.value }))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                      <option value="">Select stage</option>
+                      <option value="initial_outreach">Initial Outreach</option>
+                      <option value="follow_up">Follow Up</option>
+                      <option value="meeting_request">Meeting Request</option>
+                    </select>
+                  </div>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Subject Line *
+                  </label>
+                  <input
+                    type="text"
+                    value={templateForm.subject}
+                    onChange={(e) => setTemplateForm(prev => ({ ...prev, subject: e.target.value }))}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Enter email subject line"
+                  />
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Email Body *
+                  </label>
+                  <textarea
+                    value={templateForm.body}
+                    onChange={(e) => setTemplateForm(prev => ({ ...prev, body: e.target.value }))}
+                    rows={8}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Enter email body content..."
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                     You can use variables like {'{firstName}'}, {'{companyName}'}, {'{jobTitle}'} for personalization
+                   </p>
+                </div>
+              </div>
+              
+              <div className="flex items-center justify-end gap-3 mt-6">
+                <button
+                  onClick={() => setShowCreateTemplate(false)}
+                  className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreateTemplate}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg"
+                >
+                  Create Template
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Edit Template Modal */}
+        {showEditTemplate && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold text-gray-900">Edit Email Template</h2>
+                <button
+                  onClick={() => {
+                    setShowEditTemplate(false)
+                    setEditingTemplate(null)
+                    setTemplateForm({ subject: '', body: '', persona: '', stage: '' })
+                  }}
+                  className="text-gray-400 hover:text-gray-600 text-2xl"
+                >
+                  ×
+                </button>
+              </div>
+              
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Persona *
+                    </label>
+                    <input
+                      type="text"
+                      value={templateForm.persona}
+                      onChange={(e) => setTemplateForm(prev => ({ ...prev, persona: e.target.value }))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="Enter target persona (e.g., Operations Manager, CEO, etc.)"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Stage *
+                    </label>
+                    <select
+                      value={templateForm.stage}
+                      onChange={(e) => setTemplateForm(prev => ({ ...prev, stage: e.target.value }))}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                      <option value="">Select stage</option>
+                      <option value="initial_outreach">Initial Outreach</option>
+                      <option value="follow_up">Follow Up</option>
+                      <option value="meeting_request">Meeting Request</option>
+                    </select>
+                  </div>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Subject Line *
+                  </label>
+                  <input
+                    type="text"
+                    value={templateForm.subject}
+                    onChange={(e) => setTemplateForm(prev => ({ ...prev, subject: e.target.value }))}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Enter email subject line"
+                  />
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Email Body *
+                  </label>
+                  <textarea
+                    value={templateForm.body}
+                    onChange={(e) => setTemplateForm(prev => ({ ...prev, body: e.target.value }))}
+                    rows={8}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Enter email body content..."
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                     You can use variables like {'{firstName}'}, {'{companyName}'}, {'{jobTitle}'} for personalization
+                   </p>
+                </div>
+              </div>
+              
+              <div className="flex items-center justify-end gap-3 mt-6">
+                <button
+                  onClick={() => {
+                    setShowEditTemplate(false)
+                    setEditingTemplate(null)
+                    setTemplateForm({ subject: '', body: '', persona: '', stage: '' })
+                  }}
+                  className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleUpdateTemplate}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg"
+                >
+                  Update Template
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Content */}
         {isLoading ? (
@@ -389,7 +729,7 @@ export default function EmailManagementPage() {
                               <Clock className="h-4 w-4" />
                               {campaign.sendTimeStart} - {campaign.sendTimeEnd}
                             </span>
-                            <span>Interval: {campaign.emailInterval}h</span>
+                            <span>Interval: {campaign.emailInterval}m</span>
                             <span>Daily Limit: {campaign.dailyLimit}</span>
                             {campaign.nextSendTime && (
                               <span>Next: {new Date(campaign.nextSendTime).toLocaleString()}</span>
@@ -424,8 +764,12 @@ export default function EmailManagementPage() {
                               Resume
                             </button>
                           )}
-                          <button className="bg-gray-100 hover:bg-gray-200 text-gray-700 p-2 rounded-lg">
-                            <Settings className="h-4 w-4" />
+                          <button
+                            onClick={() => confirmDeleteCampaign(campaign.id)}
+                            className="text-gray-400 hover:text-red-500 p-1 rounded transition-colors"
+                            title="Delete campaign"
+                          >
+                            <Trash2 className="h-4 w-4" />
                           </button>
                         </div>
                       </div>
@@ -463,7 +807,10 @@ export default function EmailManagementPage() {
                           </div>
                         </div>
                         <div className="flex items-center gap-2 ml-4">
-                          <button className="bg-gray-100 hover:bg-gray-200 text-gray-700 p-2 rounded-lg">
+                          <button 
+                            onClick={() => handleEditTemplate(template)}
+                            className="bg-gray-100 hover:bg-gray-200 text-gray-700 p-2 rounded-lg"
+                          >
                             <Edit className="h-4 w-4" />
                           </button>
                           <button
@@ -518,16 +865,31 @@ export default function EmailManagementPage() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Email Interval (hours)
+                        Email Interval (minutes)
                       </label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="168"
-                        value={campaignForm.emailInterval}
-                        onChange={(e) => setCampaignForm(prev => ({ ...prev, emailInterval: parseInt(e.target.value) }))}
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          min="1"
+                          max="1440"
+                          value={campaignForm.emailInterval}
+                          onChange={(e) => setCampaignForm(prev => ({ ...prev, emailInterval: parseInt(e.target.value) }))}
+                          className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const recommended = calculateRecommendedInterval(campaignForm.dailyLimit, campaignForm.sendTimeStart, campaignForm.sendTimeEnd, selectedLeads.length)
+                            setCampaignForm(prev => ({ ...prev, emailInterval: recommended }))
+                          }}
+                          className="px-3 py-2 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
+                        >
+                          Auto
+                        </button>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Recommended: {calculateRecommendedInterval(campaignForm.dailyLimit, campaignForm.sendTimeStart, campaignForm.sendTimeEnd, selectedLeads.length)} minutes
+                      </p>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -665,6 +1027,43 @@ export default function EmailManagementPage() {
           </div>
         )}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex-shrink-0 w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                <Trash2 className="h-5 w-5 text-red-600" />
+              </div>
+              <div>
+                <h3 className="text-lg font-medium text-gray-900">Delete Campaign</h3>
+                <p className="text-sm text-gray-500">This action cannot be undone.</p>
+              </div>
+            </div>
+            <p className="text-gray-700 mb-6">
+              Are you sure you want to delete this campaign? All scheduled emails and campaign data will be permanently removed.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  setShowDeleteConfirm(false)
+                  setDeletingCampaignId(null)
+                }}
+                className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg font-medium transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteCampaign}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
+              >
+                Delete Campaign
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

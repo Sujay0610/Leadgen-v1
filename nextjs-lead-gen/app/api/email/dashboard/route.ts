@@ -19,20 +19,31 @@ export async function GET(request: NextRequest) {
     // Get email events for the time range
     const { data: events, error: eventsError } = await supabase
       .from('email_events')
-      .select(`
-        *,
-        leads!inner(
-          id,
-          firstName,
-          lastName,
-          fullName,
-          email,
-          jobTitle,
-          companyName
-        )
-      `)
+      .select('*')
       .gte('created_at', startDateStr)
       .order('created_at', { ascending: false })
+
+    // Get leads data separately to avoid foreign key issues
+let leadsData: { id: string; firstName: string; lastName: string; fullName: string; email: string; jobTitle: string; companyName: string; }[] = [];
+    if (events && events.length > 0) {
+      const leadIds = [...new Set(events.filter(e => e.leadId).map(e => e.leadId))]
+      if (leadIds.length > 0) {
+        const { data: leads } = await supabase
+          .from('leads')
+          .select('id, firstName, lastName, fullName, email, jobTitle, companyName')
+          .in('id', leadIds)
+        leadsData = leads || []
+      }
+    }
+
+    // Merge events with lead data
+    const eventsWithLeads = events ? events.map(event => {
+      const lead = leadsData.find(l => l.id === event.leadId)
+      return {
+        ...event,
+        leads: lead || null
+      }
+    }) : []
 
     if (eventsError) {
       console.error('Error fetching email events:', eventsError)
@@ -58,17 +69,17 @@ export async function GET(request: NextRequest) {
     }
 
     // Calculate overall metrics
-    const totalSent = events?.filter(e => e.eventType === 'sent').length || 0
-    const totalOpened = events?.filter(e => e.eventType === 'opened').length || 0
-    const totalClicked = events?.filter(e => e.eventType === 'clicked').length || 0
-    const totalReplied = events?.filter(e => e.eventType === 'replied').length || 0
+    const totalSent = eventsWithLeads?.filter(e => e.eventType === 'sent').length || 0
+    const totalOpened = eventsWithLeads?.filter(e => e.eventType === 'opened').length || 0
+    const totalClicked = eventsWithLeads?.filter(e => e.eventType === 'clicked').length || 0
+    const totalReplied = eventsWithLeads?.filter(e => e.eventType === 'replied').length || 0
 
     const openRate = totalSent > 0 ? (totalOpened / totalSent) * 100 : 0
     const clickRate = totalSent > 0 ? (totalClicked / totalSent) * 100 : 0
     const replyRate = totalSent > 0 ? (totalReplied / totalSent) * 100 : 0
 
     // Calculate daily metrics for charts
-    const dailyMetrics = calculateDailyMetrics(events || [], days)
+    const dailyMetrics = calculateDailyMetrics(eventsWithLeads || [], days)
 
     // Calculate engagement breakdown for pie chart
     const engagementBreakdown = [
@@ -81,7 +92,7 @@ export async function GET(request: NextRequest) {
     // Calculate campaign performance
     const campaignPerformance = await Promise.all(
       (campaigns || []).map(async (campaign) => {
-        const campaignEvents = events?.filter(e => e.campaignId === campaign.id) || []
+        const campaignEvents = eventsWithLeads?.filter(e => e.campaignId === campaign.id) || []
         const sent = campaignEvents.filter(e => e.eventType === 'sent').length
         const opened = campaignEvents.filter(e => e.eventType === 'opened').length
         const clicked = campaignEvents.filter(e => e.eventType === 'clicked').length
@@ -105,7 +116,7 @@ export async function GET(request: NextRequest) {
     )
 
     // Get recent activity (last 20 events)
-    const recentActivity = (events || [])
+    const recentActivity = (eventsWithLeads || [])
       .slice(0, 20)
       .map(event => ({
         id: event.id,

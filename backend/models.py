@@ -12,6 +12,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     conversationHistory: Optional[List[ChatMessage]] = None
+    context: Optional[Dict[str, Any]] = None
 
 class ChatResponse(BaseModel):
     status: str
@@ -82,6 +83,16 @@ class EmailSendRequest(BaseModel):
     campaignId: Optional[str] = None
     scheduledAt: Optional[datetime] = None
 
+class EmailGenerationRequest(BaseModel):
+    leadName: str
+    leadCompany: Optional[str] = None
+    leadTitle: Optional[str] = None
+    emailType: Optional[str] = "cold_outreach"
+    tone: Optional[str] = "professional"
+    customContext: Optional[str] = None
+    templateId: Optional[str] = None
+    leadData: Optional[Dict[str, Any]] = None
+
 class EmailTemplateRequest(BaseModel):
     action: str  # "generate", "create", "use"
     templateId: Optional[str] = None
@@ -113,7 +124,7 @@ class EmailDraftUpdateRequest(BaseModel):
     campaignId: Optional[str] = None
 
 class EmailCampaignRequest(BaseModel):
-    action: str  # "create", "start", "pause"
+    action: Optional[str] = None  # "create", "start", "pause"
     campaignId: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None

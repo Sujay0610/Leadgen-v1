@@ -160,9 +160,8 @@ async function searchApolloLeads(query: any) {
           companySize: person.companySize || '',
           location: person.location || '',
           linkedin_url: person.linkedinUrl || person.profileUrl || '',
-          source: 'apollo',
           createdAt: new Date().toISOString(),
-          emailStatus: 'not_sent'
+          email_status: 'not_sent'
         }))
       } else if (statusData.data.status === 'FAILED') {
         throw new Error('Apify actor run failed')
@@ -272,9 +271,8 @@ async function searchGoogleLeads(query: any) {
           companySize: '',
           location: profile.location || '',
           linkedin_url: profile.url || '',
-          source: 'google_search',
           createdAt: new Date().toISOString(),
-          emailStatus: 'not_sent'
+          email_status: 'not_sent'
         }))
       } else if (statusData.data.status === 'FAILED') {
         throw new Error('Apify actor run failed')
@@ -316,7 +314,7 @@ Respond with ONLY a JSON object in this format:
 `
 
     const response = await openai.chat.completions.create({
-      model: 'gpt-4',
+      model: 'gpt-5-nano-2025-08-07',
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.3,
       max_tokens: 200
@@ -401,16 +399,16 @@ export async function POST(request: NextRequest) {
            const icpResult = await scoreProfile(leads[i])
            leads[i] = {
              ...leads[i],
-             icpScore: icpResult.score,
-             icpGrade: icpResult.grade,
+             icp_score: icpResult.score,
+            icp_grade: icpResult.grade,
              icpReasoning: icpResult.reasoning
            }
          } catch (error) {
            console.error('Error scoring lead:', error)
            leads[i] = {
              ...leads[i],
-             icpScore: 0,
-             icpGrade: 'D',
+             icp_score: 0,
+            icp_grade: 'D',
              icpReasoning: 'Error during scoring'
            }
          }

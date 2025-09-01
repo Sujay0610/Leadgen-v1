@@ -32,7 +32,7 @@ class SimpleEmailManager:
             raise ValueError("Missing OpenAI API key")
         
         self.llm = ChatOpenAI(
-            model="openai/gpt-4.1-mini",
+            model="gpt-5-nano-2025-08-07",
             temperature=0.7,
             openai_api_key=openai_api_key,
             base_url="https://openrouter.ai/api/v1/"

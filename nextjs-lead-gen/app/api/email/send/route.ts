@@ -100,9 +100,9 @@ export async function POST(request: NextRequest) {
         const { error: updateError } = await supabase
           .from('leads')
           .update({
-            emailStatus: 'sent',
-            lastEmailSent: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
+            email_status: 'sent',
+            last_email_sent: new Date().toISOString(),
+            updated_at: new Date().toISOString()
           })
           .eq('id', leadId)
 
@@ -172,7 +172,7 @@ export async function GET(request: NextRequest) {
       // Get email status for a specific lead
       const { data: lead, error } = await supabase
         .from('leads')
-        .select('emailStatus, lastEmailSent')
+        .select('email_status, last_email_sent')
         .eq('id', leadId)
         .single()
 
@@ -185,8 +185,8 @@ export async function GET(request: NextRequest) {
 
       return NextResponse.json({
         status: 'success',
-        emailStatus: lead.emailStatus || 'not_sent',
-        lastEmailSent: lead.lastEmailSent
+        emailStatus: lead.email_status || 'not_sent',
+        lastEmailSent: lead.last_email_sent
       })
     }
 
