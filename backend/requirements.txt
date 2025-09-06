@@ -17,6 +17,7 @@ resend
 # HTTP requests and API clients
 requests
 httpx
+websockets
 
 # Data processing
 pandas
@@ -86,4 +87,3 @@ Authlib
 streamlit-authenticator
 plotly
 supabase
-pydantic
