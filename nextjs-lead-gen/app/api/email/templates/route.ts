@@ -193,9 +193,9 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === 'save') {
-      const { leadId, subject, body, persona, stage } = body
+      const { leadId, subject, body: emailBody, persona, stage } = body
 
-      if (!subject || !body || !persona || !stage) {
+      if (!subject || !emailBody || !persona || !stage) {
         return NextResponse.json(
           { status: 'error', message: 'Subject, body, persona, and stage are required' },
           { status: 400 }
@@ -247,7 +247,7 @@ export async function POST(request: NextRequest) {
       const { error } = await supabase
         .from('email_templates')
         .update({
-          usageCount: supabase.sql`usage_count + 1`,
+          usageCount: supabase.rpc('increment_usage_count', { template_id: templateId }),
           updated_at: new Date().toISOString()
         })
         .eq('id', templateId)
