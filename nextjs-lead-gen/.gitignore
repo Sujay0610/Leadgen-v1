@@ -1,0 +1,32 @@
+# Environment variables
+.env
+nextjs-lead-gen/.env.example
+nextjs-lead-gen/.env.local
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS generated files
+.DS_Store
+thumbs.db
+
+# Node.js dependencies
+node_modules/
+
+# Next.js build output
+.next/
+
+# Vercel deployment files
+.vercel/
+
+# Streamlit secrets
+.streamlit/secrets.toml

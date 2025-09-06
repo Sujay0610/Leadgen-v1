@@ -41,7 +41,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001"],  # Next.js dev server
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001", "https://leadgen-v1.netlify.app", "https://leadgen-v1.netlify.app"],  # Next.js dev server and Netlify
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

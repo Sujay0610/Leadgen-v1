@@ -205,7 +205,7 @@ export async function POST(request: NextRequest) {
       const templateData = {
         id: randomUUID(),
         subject,
-        body,
+        body: emailBody,
         persona,
         stage,
         leadId: leadId || null,
@@ -243,11 +243,26 @@ export async function POST(request: NextRequest) {
         )
       }
 
+      // Get current template to increment usage count
+      const { data: template, error: fetchError } = await supabase
+        .from('email_templates')
+        .select('usage_count')
+        .eq('id', templateId)
+        .single()
+
+      if (fetchError) {
+        console.error('Error fetching template:', fetchError)
+        return NextResponse.json(
+          { status: 'error', message: 'Failed to fetch template' },
+          { status: 500 }
+        )
+      }
+
       // Increment usage count
       const { error } = await supabase
         .from('email_templates')
         .update({
-          usageCount: supabase.rpc('increment_usage_count', { template_id: templateId }),
+          usage_count: (template.usage_count || 0) + 1,
           updated_at: new Date().toISOString()
         })
         .eq('id', templateId)

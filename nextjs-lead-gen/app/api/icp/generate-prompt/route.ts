@@ -2,11 +2,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 
-interface ScoringCriterion {
-  name: string;
-  weight: number;
-}
-
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -96,7 +91,7 @@ Target Criteria:
 - Job Titles: ${targetJobTitles.length > 0 ? targetJobTitles.join(', ') : 'Not specified'}
 - Company Sizes: ${targetCompanySizes.length > 0 ? targetCompanySizes.join(', ') : 'Not specified'}
 - Locations: ${targetLocations.length > 0 ? targetLocations.join(', ') : 'Not specified'}
-- Scoring Criteria: ${scoringCriteria.length > 0 ? scoringCriteria.map((c: ScoringCriterion) => `${c.name} (${c.weight}%)`).join(', ') : 'Standard criteria'}
+- Scoring Criteria: ${scoringCriteria.length > 0 ? scoringCriteria.map((c: { name: string; weight: number }) => `${c.name} (${c.weight}%)`).join(', ') : 'Standard criteria'}
 - Additional Requirements: ${customRequirements || 'None specified'}
 
 Please generate a detailed ICP scoring prompt that:
